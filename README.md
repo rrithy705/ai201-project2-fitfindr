@@ -152,8 +152,19 @@ its result into the session, and the next step reads it back from there.
 **One full query**
 
 ```
-$ python app.py ask '...'
+$ python app.py ask 'vintage graphic tee under $30'
 
+  Found:    Y2K Baby Tee — Butterfly Print — $18.0 on depop
+
+  Outfit:   **Outfit 1**
+Pair the baby tee with the baggy straight-leg jeans, dark wash and the chunky white sneakers for a classic Y2K contrast of fitted and loose silhouettes. Layer the vintage black denim jacket on top to tie in the cool tones.
+
+**Outfit 2**
+Style the baby tee tucked into the wide-leg khaki trousers, accented by the brown leather belt. Finish the look with the black combat boots to ground the soft pink and purple butterfly print.
+
+  Fit card: Scored this Y2K butterfly baby tee on Depop for just $18 and I’m obsessed with the pink and purple print. Whether I'm balancing the fitted silhouette with baggy dark wash denim or tucking it into wide-leg khakis, it's the ultimate nostalgia piece. 🦋
+
+2 model calls this session, 523 prompt + 161 output tokens
 ```
 
 **The empty-search branch**
@@ -183,13 +194,22 @@ $ python -c "from tools import search_listings; print(search_listings('designer 
 ```
 
 ```
-$ python -c "from tools import suggest_outfit; ..."
+$ python -c "from tools import suggest_outfit; from utils.data_loader import get_example_wardrobe, load_listings; print(suggest_outfit(load_listings()[0], get_example_wardrobe()))"
+**Outfit 1:** Pair the Levi's 501s with the white ribbed tank top, black cropped zip hoodie, and black combat boots. Cinch it all together with the brown leather belt and add the black crossbody bag.
 
+**Outfit 2:** Style the jeans with the oversized grey crewneck sweatshirt and chunky white sneakers. Layer on the vintage black denim jacket and finish the look with the black crossbody bag.
 ```
 
-```
-$ python -c "from tools import create_fit_card; ..."
+Run three times on the same item with the cache off (`AI201_CACHE=0`), to check
+the captions aren't identical:
 
+```
+$ AI201_CACHE=0 python -c "from tools import create_fit_card; from utils.data_loader import load_listings; print(create_fit_card('jeans and white sneakers', load_listings()[0]))"
+Scored these vintage Levi's 501s for just $38 on depop and they fit like an absolute dream. Paired them with crisp white sneakers for that effortlessly lived-in, everyday streetwear feel. Trust me, you can't beat a classic medium wash. 👖👟
+
+Scored these vintage Levi’s 501s on depop for just $38 and they fit like an absolute dream. Kept it classic with crisp white sneakers for that effortless, off-duty coffee run vibe. 👖👟
+
+Scored these vintage Levi's 501s for just $38 on Depop. Paired them with crisp white sneakers for that effortlessly worn-in, off-duty streetwear look. Classic denim never misses 👖✨
 ```
 
 ---
