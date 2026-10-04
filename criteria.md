@@ -25,9 +25,7 @@ Given a query that matches at least one listing, the agent completes all three
 tool calls and returns a fit card — in at least 4 of 5 tries.
 
 **Why this target:**
-<!-- Why 4 of 5 and not 5 of 5? Something about your search, probably —
-     "my search is a plain keyword match and some phrasings will miss" is a
-     real answer. -->
+I chose 4 out of 5 because the search uses keyword matching, so some search phrases might not find a listing even when a similar item exists. Requiring 5 out of 5 would be too strict because different wording can affect the search results.
 
 ---
 
@@ -37,65 +35,35 @@ Given a query that matches no listings, the agent stops before calling
 `suggest_outfit` and returns a message naming what to change — 5 of 5 tries.
 
 **Why this target:**
-<!-- Why is 5 of 5 reasonable here when criterion 1 isn't? What's different
-     about this path? -->
+I chose 5 out of 5 because the agent has a specific condition that checks whether the search returned any results. If the list is empty, the loop should stop instead of calling the next tool. This is a predictable part of the agent's logic.
 
 ---
 
-## 3. Something about state
-
-<!-- YOU WRITE THIS ONE.
-
-     How would you know that the item your search found is the same item the
-     next tool received? Name something countable or observable.
-
-     This is the criterion people find hardest, because state failure doesn't
-     look like state failure — it looks like a tool problem. Something that
-     compares session["selected_item"] against what actually reached
-     suggest_outfit is the shape you're after. -->
-
-
+## 3. The selected item is passed correctly between tools
+When search_listings finds an item, the same item is passed to suggest_outfit through the session state: the `id` of `session["selected_item"]` equals the `id` of the first item in `session["search_results"]` and of the item suggest_outfit received, and the price in the fit card equals `session["selected_item"]["price"]` — in 5 out of 5 tries.
 
 **Why this target:**
 
-
+I chose 5 out of 5 because the session state is designed to keep the selected listing consistent as it moves between the three tools. The search results and selected item are stored in the session dictionary, so the same item should be passed to suggest_outfit every time. Checking the item ID and price makes it possible to verify that the tools are using the same listing rather than a different result.
 
 ---
 
-## 4. Something about the fit card
-
-<!-- YOU WRITE THIS ONE.
-
-     The fit card calls a model, so the same input can produce different words
-     each time. That's not a bug — it's the nature of the tool. So what would
-     make it acceptable?
-
-     Think about what you'd actually be unhappy to see. A caption that never
-     mentions the price? Two different items producing the same opening
-     sentence? A card longer than a caption anyone would post? Any of those can
-     be turned into a number. -->
-
+## 4. The fit card includes the important item details
+Running the same matching query 5 times (e.g. 'vintage graphic tee under $30'), at least 4 of the 5 fit cards include at least one distinctive word from the selected item's title (e.g. "tee"), the exact price (e.g. "$18"), and the platform name (e.g. "depop", in any capitalization).
 
 
 **Why this target:**
-
+I chose 4 out of 5 because the fit card uses Gemini, which can generate different responses each time. The card should still include the important shopping information, even if the wording changes.
 
 
 ---
 
-## 5. Your choice
-
-<!-- YOU WRITE THIS ONE TOO.
-
-     Pick something you actually care about getting right. Speed, the empty
-     wardrobe path, what happens when the model can't be reached, whether the
-     search respects a price ceiling — anything, as long as it names a number
-     or an observable outcome. -->
-
+## 5. Search results stay within the user's budget
+When a user enters a maximum price, every returned listing must be at or below that price — in 5 out of 5 tries.
 
 
 **Why this target:**
-
+I chose 5 out of 5 because search_listings uses a price filter to remove items that exceed the user's budget. This is a basic requirement for the shopping agent and should work consistently without depending on the AI model.
 
 
 ---
