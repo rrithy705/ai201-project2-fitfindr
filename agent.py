@@ -17,8 +17,9 @@ import re
 
 import config
 import trace
-from tools import search_listings, suggest_outfit, create_fit_card
+from tools import suggest_outfit, create_fit_card
 from generate import ModelUnavailable
+from mcp_client import call_tool, MCPError
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -47,6 +48,19 @@ def new_session(query: str, wardrobe: dict) -> dict:
         "fit_card": None,            # what create_fit_card returned
         "error": None,               # set when the run ended early
     }
+
+
+# ── search, over MCP ──────────────────────────────────────────────────────────
+
+def search_listings(description, size=None, max_price=None) -> list[dict]:
+    """
+    search_listings, called through the MCP server in mcp_server.py rather than
+    imported from tools.py. Same inputs, same list of dicts back.
+    """
+    return call_tool(
+        "search_listings",
+        {"description": description, "size": size, "max_price": max_price},
+    ) or []
 
 
 # ── query parsing ─────────────────────────────────────────────────────────────
@@ -108,9 +122,10 @@ def _empty_search_message(parsed: dict) -> str:
 
     hints = []
     if price is not None:
-        n = len(search_listings(desc, size, None))
+        without_price = search_listings(desc, size, None)
+        n = len(without_price)
         if n:
-            cheapest = min(x["price"] for x in search_listings(desc, size, None))
+            cheapest = min(x["price"] for x in without_price)
             hints.append(
                 f"raise your max price — {n} match without the ${price:.0f} "
                 f"limit, the cheapest at ${cheapest:.0f}"
@@ -191,39 +206,78 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     # Each step looks at what the session holds and picks the next tool from
     # that. The loop ends when there's a fit card or an error.
     iterations = 0
-    while session["fit_card"] is None and session["error"] is None:
-        iterations += 1
-        trace.check_iterations(iterations)
+    try:
+        while session["fit_card"] is None and session["error"] is None:
+            iterations += 1
+            trace.check_iterations(iterations)
 
-        if not session["parsed"]:
-            session["parsed"] = parse_query(session["query"])
-            if not session["parsed"]["description"]:
-                session["error"] = (
-                    "Your query only had a size or a price in it. Say what "
-                    "kind of item you want, e.g. 'graphic tee under $30'."
+            if not session["parsed"]:
+                session["parsed"] = parse_query(session["query"])
+                trace.step("parse_query", inputs=session["query"],
+                           returned=str(session["parsed"]))
+                if not session["parsed"]["description"]:
+                    session["error"] = (
+                        "Your query only had a size or a price in it. Say what "
+                        "kind of item you want, e.g. 'graphic tee under $30'."
+                    )
+                    trace.step("branch", note="no item words: stopping before search")
+
+            elif session["selected_item"] is None:
+                parsed = session["parsed"]
+                session["search_results"] = search_listings(
+                    parsed["description"], parsed["size"], parsed["max_price"]
                 )
+                trace.step("search_listings (via MCP)", inputs=str(parsed),
+                           returned=session["search_results"],
+                           note=f"{len(session['search_results'])} match(es)")
+                # THE BRANCH: nothing found → explain and stop, never call
+                # suggest_outfit with nothing.
+                if not session["search_results"]:
+                    session["error"] = _empty_search_message(parsed)
+                    trace.step("branch", note="search returned []: stopping "
+                               "before suggest_outfit")
+                else:
+                    session["selected_item"] = session["search_results"][0]
+                    trace.step("select_item", returned=session["selected_item"],
+                               note=f"id {session['selected_item']['id']}, "
+                               "first of the results")
 
-        elif session["selected_item"] is None:
-            parsed = session["parsed"]
-            session["search_results"] = search_listings(
-                parsed["description"], parsed["size"], parsed["max_price"]
-            )
-            # THE BRANCH: nothing found → explain and stop, never call
-            # suggest_outfit with nothing.
-            if not session["search_results"]:
-                session["error"] = _empty_search_message(parsed)
+            elif session["outfit_suggestion"] is None:
+                session["outfit_suggestion"] = suggest_outfit(
+                    session["selected_item"], session["wardrobe"]
+                )
+                n_owned = len((session["wardrobe"] or {}).get("items") or [])
+                trace.step("suggest_outfit", inputs=session["selected_item"],
+                           returned=session["outfit_suggestion"],
+                           note=f"{n_owned} wardrobe item(s)")
+
             else:
-                session["selected_item"] = session["search_results"][0]
+                session["fit_card"] = create_fit_card(
+                    session["outfit_suggestion"], session["selected_item"]
+                )
+                trace.step("create_fit_card", inputs=session["selected_item"],
+                           returned=session["fit_card"])
 
-        elif session["outfit_suggestion"] is None:
-            session["outfit_suggestion"] = suggest_outfit(
-                session["selected_item"], session["wardrobe"]
-            )
+    except ModelUnavailable as exc:
+        found = session["selected_item"]
+        session["error"] = (
+            "The styling model couldn't be reached, so no outfit or fit card was "
+            "written. "
+            + (f"The search still worked: the best match was {found['title']} — "
+               f"${found['price']:.0f} on {found['platform']}. " if found else "")
+            + "Check that GEMINI_API_KEY in .env is correct and that you're "
+            "online, then run the same query again."
+            f"\n(What the service said: {str(exc).splitlines()[0]})"
+        )
+        trace.step("model unavailable", note="stopping; search result kept")
 
-        else:
-            session["fit_card"] = create_fit_card(
-                session["outfit_suggestion"], session["selected_item"]
-            )
+    except MCPError as exc:
+        session["error"] = (
+            "The listings search couldn't be reached, so nothing was searched. "
+            "Check that `python mcp_server.py` starts without an error, then "
+            f"run the same query again.\n(What went wrong: {str(exc).splitlines()[0]})"
+        )
+        trace.step("search unavailable", note="MCP call failed; stopping")
 
     return session
 
