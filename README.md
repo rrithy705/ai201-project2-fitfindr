@@ -419,15 +419,18 @@ criterion 2 never firing on an impossible request.
 
 **Diagnosis: one problem, not three. It's in the tool, `tools.py::search_listings` → `_score`.**
 Every query word scores the same, whatever role it plays. An adjective
-("black", "leather") in a listing's title scores 2, which is exactly what the
-item noun ("boots", "jacket") scores in a title. Then:
+("black", "leather") in a listing's title scores 2, exactly what the item
+noun ("boots", "jacket") scores in a title. So a listing that matches only
+the adjective ties with one that is actually the item, and price breaks the
+tie. Then:
 
-- `black boots`: Biker Shorts get 2 for "black" in the title, plus 1 for
-  "boots" in their description, for 3. The Chelsea Boots get 2 for "boots"
-  in the title, for 2. The shorts win.
-- `leather jacket`: the Leather Belt gets 2 for "leather" and the Denim Jacket
-  gets 2 for "jacket". That's a tie, and the tie-break (cheaper first) picks
-  the $12 belt.
+- `black boots`: Biker Shorts — Black score 2 ("black" in the title). Suede
+  Chelsea Boots score 2 ("boots" in the title). That's a tie, and the
+  tie-break (cheaper first) picks the $14 shorts over the $44 boots.
+- `leather jacket`: the Leather Belt scores 2 ("leather") and the Denim Jacket
+  scores 2 ("jacket"). Same tie, and the $12 belt wins.
+
+  (Checked with `tools._score` directly: both pairs come out 2–2.)
 - `black ballgown`: "ballgown" matches nothing, but "black" matches plenty.
   A listing only needs a score above zero to be kept, so the list is
   non-empty and **the branch in `agent.py::run_agent` never sees `[]`**.
