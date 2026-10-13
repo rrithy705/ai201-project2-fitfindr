@@ -83,7 +83,9 @@ def search_listings(
     "S/M" but not "XL"; null skips the size filter); max_price (number or null,
     in US dollars, inclusive; null skips the price filter).
 
-    Returns up to 10 listing objects, best keyword match first, each with id,
+    The last keyword is treated as the item type ("black boots" -> boots) and
+    must appear in a listing's title, category or style tags; other keywords
+    only rank. Returns up to 10 listing objects, best keyword match first, each with id,
     title, description, category, style_tags, size, condition, price (USD),
     colors, brand (may be null) and platform. When nothing matches it returns
     an empty list — never null and never an error.

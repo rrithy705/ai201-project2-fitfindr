@@ -67,11 +67,15 @@ def _size_matches(wanted: str, listing_size: str) -> bool:
     return bool(wanted_tokens) and wanted_tokens <= listing
 
 
-def _score(words: list[str], listing: dict) -> int:
-    """Title, category and style-tag hits count 2; description, colour and brand hits count 1."""
-    strong = set(_words(" ".join(
+def _strong_words(listing: dict) -> set[str]:
+    return set(_words(" ".join(
         [listing["title"], listing["category"], *listing["style_tags"]]
     )))
+
+
+def _score(words: list[str], listing: dict) -> int:
+    """Title, category and style-tag hits count 2; description, colour and brand hits count 1."""
+    strong = _strong_words(listing)
     weak = set(_words(" ".join(
         [listing["description"], *listing["colors"], listing.get("brand") or ""]
     )))
@@ -138,11 +142,19 @@ def search_listings(
     if not words:
         return []
 
+    # The last word is the item type in English ("black boots", "leather
+    # jacket"). It has to be in the title, category or style tags. Without
+    # this, a listing that only matched the adjective tied with the real item
+    # and the cheaper one won: "black boots" returned Biker Shorts — Black.
+    item_type = words[-1]
+
     scored = []
     for listing in load_listings():
         if max_price is not None and listing["price"] > max_price:
             continue
         if size and not _size_matches(size, listing["size"]):
+            continue
+        if item_type not in _strong_words(listing):
             continue
         score = _score(words, listing)
         if score > 0:
