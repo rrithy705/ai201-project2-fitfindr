@@ -358,15 +358,85 @@ Criterion 5 (`vintage jeans under $35`). Scorer: `PASS — 10 results, highest $
 
 | # | Criterion | Target | Verdict | How I decided |
 |---|---|---|---|---|
-| 1 |  |  |  |  |
-| 2 |  |  |  |  |
-| 3 |  |  |  |  |
-| 4 |  |  |  |  |
-| 5 |  |  |  |  |
+| 1 | Matching query completes all three tools | 4 of 5 | **MET (5/5)** | All 5 tries called search → suggest_outfit → create_fit_card and returned a non-empty card. 5 ≥ 4. |
+| 2 | Impossible query stops before tool 2 | 5 of 5 | **MET (5/5)** | All 5 tries stopped at step 3 (`branch`), with 0 model calls and a message naming what to change. |
+| 3 | Selected item passed correctly between tools | 5 of 5 | **MET (5/5)** | All 5 tries had `lst_019` as `selected_item`, `search_results[0]`, and the argument both model tools received. All 5 cards said `$48`. |
+| 4 | Fit card has title word, price, platform | 4 of 5 | **MET (5/5)** | All 5 cards had a title word ("baby"/"tee"/"butterfly"), `$18` and "Depop". 5 ≥ 4. |
+| 5 | Search results stay within budget | 5 of 5 | **MET (5/5)** | All 5 tries parsed `max_price` 35.0. The highest result price was $30. |
 
 **Diagnoses**
 
+Nothing missed, so there is no miss to diagnose. Read plainly, though, that is
+mostly because **my targets were low**, and I'd rather say so than call it a
+good result:
 
+- **Criteria 2, 3 and 5 test code with no model in it.** The parser, the
+  search and the branch are deterministic. Running them five times gives the
+  same answer five times. The only thing those three rows could fail on is a
+  bug, and those bugs were already fixed in unit 3.
+- **Criterion 3 passes almost by construction.** `selected_item` is
+  `search_results[0]` in the same dict, and both model tools are handed that
+  same object. It could only fail if I rewrote the loop. It's a regression
+  test, not a measurement.
+- **Criteria 1 and 4 are the only rows with real variance**, because of the
+  model. Even there, the prompt for `create_fit_card` literally says "Mention
+  the price ($18) and the platform (depop)". So the model was being asked to
+  do exactly what criterion 4 checks for.
+- **Each criterion ran on one query.** Criterion 2's impossible query
+  (`designer ballgown size XXS under $5`) shares no word with any listing, so
+  it's the easiest possible impossible query.
+
+**The criteria I'd tighten: 1 and 2.** Criterion 1 counts any completed fit
+card as a pass, whether or not the item is what the user asked for. Criterion 2
+only tests a query with zero words in common with the data. To check whether
+the criteria were hiding a failure, I added three **diagnostic probes** to
+`scenarios.py`. They are not criteria, and I did not edit `criteria.md`. Each
+one passes only if the agent either stops at the empty-search branch or picks
+an item whose title contains the word asked for. I ran them on the unchanged
+code (`python score_eval.py --label before-probe --probes-only`, see
+`results/score_*_before-probe.md`):
+
+| Probe | Query | Try 1 | Try 2 | Try 3 | Try 4 | Try 5 | Result |
+|---|---|---|---|---|---|---|---|
+| colour word vs item type | `black boots` | FAIL | FAIL | FAIL | FAIL | FAIL | 0/5 |
+| material word vs item type | `leather jacket under $45` | FAIL | FAIL | FAIL | FAIL | FAIL | 0/5 |
+| impossible item with a common colour | `black ballgown` | FAIL | FAIL | FAIL | FAIL | FAIL | 0/5 |
+
+What happened, from `results/run_*_before-probe.md`:
+
+```
+black boots               → picked Biker Shorts — Black, Shiny ($14)    (Suede Chelsea Boots, $44, exist in the data)
+leather jacket under $45  → picked Leather Belt — Brown, Braided ($12)  (Denim Jacket $42 and Track Jacket $45 are in budget)
+black ballgown            → picked Biker Shorts — Black, Shiny ($14)    (no ballgown exists; should have stopped)
+
+Fit card (black boots, try 1):
+Serving major Y2K off-duty energy with these shiny black biker shorts. Snagged them on Depop for just $14 and they're the ultimate base for a sporty zip-hoodie fit or an edgy oversized crewneck look. 🖤✨
+```
+
+All 15 of those runs would have **passed criterion 1**: all three tools ran
+and returned a fit card. The `black ballgown` runs show the branch from
+criterion 2 never firing on an impossible request.
+
+**Diagnosis: one problem, not three. It's in the tool, `tools.py::search_listings` → `_score`.**
+Every query word scores the same, whatever role it plays. An adjective
+("black", "leather") in a listing's title scores 2, which is exactly what the
+item noun ("boots", "jacket") scores in a title. Then:
+
+- `black boots`: Biker Shorts get 2 for "black" in the title, plus 1 for
+  "boots" in their description, for 3. The Chelsea Boots get 2 for "boots"
+  in the title, for 2. The shorts win.
+- `leather jacket`: the Leather Belt gets 2 for "leather" and the Denim Jacket
+  gets 2 for "jacket". That's a tie, and the tie-break (cheaper first) picks
+  the $12 belt.
+- `black ballgown`: "ballgown" matches nothing, but "black" matches plenty.
+  A listing only needs a score above zero to be kept, so the list is
+  non-empty and **the branch in `agent.py::run_agent` never sees `[]`**.
+  The loop and the session did their jobs correctly. The tool returned a
+  non-empty list that meant "nothing you asked for".
+
+The model is not the cause. `suggest_outfit` and `create_fit_card` faithfully
+styled the wrong item they were handed, and the card read well. That is
+worse, because nothing on screen tells the user the search went wrong.
 
 ---
 
