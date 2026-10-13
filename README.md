@@ -253,19 +253,87 @@ Scored these vintage Levi's 501s for just $38 on Depop. Paired them with crisp w
      `python run_eval.py --label before` runs everything and writes the table
      into results/. Paste it here and fill in the verdicts. -->
 
+Produced by `python score_eval.py --label before`. That runs
+`run_eval.py::main` unchanged (every scenario in `scenarios.py`, 5 tries each,
+cache off, temperature 0.9, 50 real model calls). It then marks each try PASS
+or FAIL with one check per criterion, written to match `criteria.md`
+(`score_eval.py::score`). Full output is in [results/run_2026-10-13_1920_before.md](results/run_2026-10-13_1920_before.md), and the
+reason for every PASS/FAIL is in [results/score_2026-10-13_1920_before.md](results/score_2026-10-13_1920_before.md).
+
 | Criterion | Target | Try 1 | Try 2 | Try 3 | Try 4 | Try 5 | Verdict |
 |---|---|---|---|---|---|---|---|
-| 1.  |  |  |  |  |  |  |  |
-| 2.  |  |  |  |  |  |  |  |
-| 3.  |  |  |  |  |  |  |  |
-| 4.  |  |  |  |  |  |  |  |
-| 5.  |  |  |  |  |  |  |  |
+| 1. Matching query completes all three tools | 4 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 2. Impossible query stops before tool 2 | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 3. Selected item passed correctly between tools | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 4. Fit card has title word, price, platform | 4 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 5. Search results stay within budget | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
 
-**Real output from one try**, pasted as text, naming the file and function
-that produced it:
+Scenario per criterion (`scenarios.py`): 1 → `90s track jacket in size M`;
+2 → `designer ballgown size XXS under $5`; 3 → `platform sneakers size 8`;
+4 → `vintage graphic tee under $30` (the query criterion 4 names);
+5 → `vintage jeans under $35`. The empty-wardrobe diagnostic
+(`denim jacket under $50`, empty wardrobe) completed 5 of 5 times with a
+non-empty outfit and fit card.
 
+How each try was scored:
+1. PASS if no error, `suggest_outfit` and `create_fit_card` were both called, and the fit card is non-empty.
+2. PASS if neither model tool was called, `fit_card` is None, and `session["error"]` names something to change.
+3. PASS if the `id` of `selected_item`, `search_results[0]`, the item `suggest_outfit` received and the item `create_fit_card` received are all equal, AND the fit card contains `$<selected_item price>`. The ids come from a wrapper that records each tool's argument.
+4. PASS if the card contains a word from the item's title, the exact price (`$18`), and the platform (any case).
+5. PASS if the parser found a `max_price` and every listing in `search_results` is at or under it.
+
+Model tries did differ: the five criterion-4 fit cards opened with "Found
+this…", "Scored this…" and so on, and were 191 to 356 characters long. So these
+are five real answers, not cache hits.
+
+**Real output from one try each.** These are try 1 from `results/run_2026-10-13_1920_before.md`. The loop is
+`agent.py::run_agent`, the outfit comes from `tools.py::suggest_outfit`, the
+card from `tools.py::create_fit_card`, and the search from `search_listings`
+in `mcp_server.py` (called via `mcp_client.call_tool`).
+
+Criterion 1 (`90s track jacket in size M`):
+```
+- selected_item: 90s Track Jacket — Navy/White Stripe ($45.0, poshmark)
+- search_results: 5
+Fit card:
+Scored this vintage Champion track jacket on Poshmark for just $45 and it’s basically my new uniform. Whether I’m throwing it over a ribbed tank or layering it on top of an oversized crewneck, that navy and white stripe hits that 90s athletic vibe just right. 👟✨
 ```
 
+Criterion 2 (`designer ballgown size XXS under $5`), from `agent.py::_empty_search_message`:
+```
+- stopped early: yes — No listings matched 'designer ballgown' in size XXS under $5. To find something, try different words for the item — nothing in the listings matches those words at any size or price. Broader terms like 'tee', 'jacket', 'jeans' or 'sneakers' cover more of the data.
+- selected_item: (none)
+- search_results: 0
+[3] branch
+      →    search returned []: stopping before suggest_outfit
+```
+
+Criterion 3 (`platform sneakers size 8`). Scorer: `PASS — id lst_019 throughout, $48 in card`
+```
+- selected_item: Platform Sneakers — White Chunky Sole ($48.0, poshmark)
+[3] select_item
+      out: Platform Sneakers — White Chunky Sole ($48.0, poshmark)
+      →    id lst_019, first of the results
+Fit card:
+Channeling major Y2K streetwear energy with these white chunky sole platform sneakers, priced at just $48 on Poshmark. Style them effortlessly with dark wash baggy jeans and a vintage denim jacket, or lean into a casual silhouette with wide-leg trousers and a black cropped zip hoodie. Snag this versatile pair to instantly ground your everyday rotation 👟✨
+```
+
+Criterion 4 (`vintage graphic tee under $30`). "baby"/"tee"/"butterfly", "$18" and "Depop" are all present:
+```
+- selected_item: Y2K Baby Tee — Butterfly Print ($18.0, depop)
+Fit card:
+Found this Y2K butterfly baby tee on Depop for just $18 and I'm obsessed with the pink and purple print. Styling it two ways: super casual with baggy dark wash denim and a black jacket, or dressed down with khaki trousers and combat boots. Which vibe are you wearing? 🦋
+```
+
+Criterion 5 (`vintage jeans under $35`). Scorer: `PASS — 10 results, highest $30 ≤ $35`
+```
+[1] parse_query
+      in:  vintage jeans under $35
+      out: {'description': 'vintage jeans', 'size': None, 'max_price': 35.0}
+[2] search_listings (via MCP)
+      in:  {'description': 'vintage jeans', 'size': None, 'max_price': 35.0}
+      out: 10 items: Straight Leg Black Jeans — Faded, Leather Belt — Brown, Braided, Bucket Hat — Reversible, Brown Plaid … +7 more
+      →    10 match(es)
 ```
 
 ---
@@ -314,17 +382,54 @@ that produced it:
      the same length, your branch isn't working — and this is the fastest way
      anyone will ever find that out. -->
 
+From `python app.py ask '90s track jacket in size M' --trace`. This is try 1
+of criterion 1 in `results/run_2026-10-13_1920_before.md`, cache off. Step 2 is the MCP call.
+
 **Happy path**
 
 ```
-
+[1] parse_query
+      in:  90s track jacket in size M
+      out: {'description': '90s track jacket in', 'size': 'M', 'max_price': None}
+[2] search_listings (via MCP)
+      in:  {'description': '90s track jacket in', 'size': 'M', 'max_price': None}
+      out: 5 items: 90s Track Jacket — Navy/White Stripe, 90s Leather Bomber — Black, Bucket Hat — Reversible, Brown Plaid … +2 more
+      →    5 match(es)
+[3] select_item
+      out: 90s Track Jacket — Navy/White Stripe ($45.0, poshmark)
+      →    id lst_004, first of the results
+[4] suggest_outfit
+      in:  90s Track Jacket — Navy/White Stripe ($45.0, poshmark)
+      out: Outfit 1: Pair the 90s Track Jacket with the white ribbed tank top, baggy straight-leg jeans, and chunky white…
+      →    10 wardrobe item(s)
+[5] create_fit_card
+      in:  90s Track Jacket — Navy/White Stripe ($45.0, poshmark)
+      out: Scored this vintage Champion track jacket on Poshmark for just $45 and it’s basically my new uniform. Whether …
 ```
+
+Why each step was chosen. The session had no `parsed` yet, so the loop parsed
+first. With `parsed` set and no `selected_item`, it searched over MCP. The
+search returned 5 (not `[]`), so the branch took `results[0]`. With an item and
+no outfit, it called `suggest_outfit`. With an outfit and no card, it called
+`create_fit_card`. Then `fit_card` was set and the `while` condition ended the
+loop.
 
 **Empty search**
 
 ```
-
+[1] parse_query
+      in:  designer ballgown size XXS under $5
+      out: {'description': 'designer ballgown', 'size': 'XXS', 'max_price': 5.0}
+[2] search_listings (via MCP)
+      in:  {'description': 'designer ballgown', 'size': 'XXS', 'max_price': 5.0}
+      out: [] (empty)
+      →    0 match(es)
+[3] branch
+      →    search returned []: stopping before suggest_outfit
 ```
+
+Three steps instead of five. The branch set `session["error"]`, and the
+`while` condition ended the loop before either model tool ran (0 model calls).
 
 **On the MCP move:** `search_listings` now lives behind an MCP server
 (`mcp_server.py`, registered with `@mcp.tool()`, typed inputs `description: str`,
