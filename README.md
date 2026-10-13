@@ -326,10 +326,96 @@ that produced it:
 
 ```
 
-**On the MCP move:** <!-- what changed in your code, and whether anything
-behaved differently afterwards. If the rewire didn't work, say exactly where it
-broke — the error text and the last thing that worked. That earns the point in
-full. -->
+**On the MCP move:** `search_listings` now lives behind an MCP server
+(`mcp_server.py`, registered with `@mcp.tool()`, typed inputs `description: str`,
+`size: str | None`, `max_price: float | None`, matching the Tool Inventory).
+In `agent.py` I replaced `from tools import search_listings` with a small
+`agent.py::search_listings` that calls `mcp_client.call_tool("search_listings",
+{...})`. Every search in the agent goes through it, including the
+re-searches `_empty_search_message` runs to work out which filter to drop.
+`suggest_outfit` and `create_fit_card` are still direct calls.
+`python mcp_client.py` lists the tool with its description and its three inputs
+(`description: string`, `size: string (optional)`, `max_price: number (optional)`).
+
+Nothing behaved differently afterwards. I compared the direct and MCP calls on
+three queries (`vintage graphic tee` ≤ $30, `platform sneakers` size 8, the
+impossible ballgown). Both returned identical lists (`==` was True), prices
+came back as `float`, and the empty case came back as `[]`, not None. The
+`vintage graphic tee under $30` run picked the same item (Y2K Baby Tee, $18,
+depop) as in unit 3. The only thing that changed was speed. Each MCP call starts
+the server as a new process, so a search takes roughly half a second instead of
+being instant. An empty search with a size and a price makes up to three MCP calls.
+
+If the server can't be reached, `run_agent` catches `MCPError` and says
+"The listings search couldn't be reached… Check that `python mcp_server.py`
+starts without an error". It doesn't silently fall back to the direct call,
+because a fallback would hide whether the MCP path was actually being used.
+
+### Failure modes, triggered on purpose
+
+**1. Empty search.** `python app.py ask 'designer ballgown size XXS under $5'`
+
+```
+  No listings matched 'designer ballgown' in size XXS under $5. To find something, try different words for the item — nothing in the listings matches those words at any size or price. Broader terms like 'tee', 'jacket', 'jeans' or 'sneakers' cover more of the data.
+
+0 model calls this session
+```
+
+This handler already existed from unit 3 (`agent.py::_empty_search_message`).
+When dropping a filter would help, it says so with numbers instead, e.g.
+`'graphic tee size M under $10'` → "raise your max price — 2 match without the
+$10 limit, the cheapest at $15".
+
+**2. Empty wardrobe.** `python app.py ask 'denim jacket under $50' --empty-wardrobe`
+
+```
+(running with an empty wardrobe)
+  Found:    Denim Jacket — Light Wash, Cropped — $42.0 on poshmark
+
+  Outfit:   **Outfit 1 (Denim on Denim):** Pair with black straight-leg jeans, a plain white t-shirt, and white sneakers for a classic, high-contrast look.
+
+**Outfit 2 (Off-Duty Casual):** Throw it over a grey cotton hoodie and black leggings, finished with comfortable retro-runner sneakers.
+
+  Fit card: Scored this vintage Wrangler light-wash cropped denim jacket on Poshmark for just $42. It’s got that perfectly broken-in feel and looks so good thrown over a grey hoodie or paired with black straight-leg denim. A timeless streetwear staple that I’ll be wearing on repeat. 👖✨
+```
+
+No crash and no empty string. `tools.py::suggest_outfit` already switched to a
+"common basics" prompt when `wardrobe["items"]` was empty, so no new handler was
+needed. It also ran 5 of 5 times as the diagnostic scenario in the run log.
+
+**3. Model unavailable.** I changed the last character of the key for one command
+(`GEMINI_API_KEY=<key with last char changed> AI201_CACHE=0 python app.py ask
+'corduroy jacket under $60'`, a query I hadn't run before, with the cache off).
+
+Before the handler (unit 3 code), the run ended with one line and the search
+result was lost:
+
+```
+ModelUnavailable: The model rejected your API key. Check GEMINI_API_KEY in your .env file, or create a fresh key at aistudio.google.com.
+```
+
+It wasn't a stack trace, because `app.py::main` catches everything. But it
+showed a Python class name and threw away the search result, which had worked.
+I added a `ModelUnavailable` handler in `agent.py::run_agent`. Now it returns
+in about 1 second, with no hang:
+
+```
+[1] parse_query
+      in:  corduroy jacket under $60
+      out: {'description': 'corduroy jacket', 'size': None, 'max_price': 60.0}
+[2] search_listings (via MCP)
+      in:  {'description': 'corduroy jacket', 'size': None, 'max_price': 60.0}
+      out: 4 items: Corduroy Wide-Leg Pants — Rust, Denim Jacket — Light Wash, Cropped, 90s Track Jacket — Navy/White Stripe … +1 more
+      →    4 match(es)
+[3] select_item
+      out: Corduroy Wide-Leg Pants — Rust ($32.0, depop)
+      →    id lst_005, first of the results
+[4] model unavailable
+      →    stopping; search result kept
+
+  The styling model couldn't be reached, so no outfit or fit card was written. The search still worked: the best match was Corduroy Wide-Leg Pants — Rust — $32 on depop. Check that GEMINI_API_KEY in .env is correct and that you're online, then run the same query again.
+(What the service said: The model rejected your API key. Check GEMINI_API_KEY in your .env file, or create a fresh key at aistudio.google.com.)
+```
 
 
 
