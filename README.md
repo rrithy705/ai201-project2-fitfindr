@@ -262,18 +262,6 @@ Scored these vintage Levi's 501s for just $38 on Depop. Paired them with crisp w
   Broken (item 2). The lesson: I tested the handler against one cause, and
   the message assumed that cause.
 
-**Unit 4, Moment 3: scoring the tries**
-
-- *What I asked for:* a way to mark every try PASS/FAIL using the exact
-  wording of `criteria.md`, instead of eyeballing 25 outputs.
-- *What came back:* `score_eval.py`, which wraps `run_eval.py` without
-  changing it, records which item each model tool received (for criterion 3),
-  and writes `results/score_*.md` with a reason for each PASS/FAIL.
-- *What I changed:* I checked its rules against `criteria.md` before the
-  before run. Criterion 4's "distinctive title word" ignores generic words
-  like "print" and "wash", and criterion 5 fails a try if the parser found
-  no `max_price`, rather than passing it vacuously.
-
 <!-- ═══════════════════════ UNIT 4 — THE TEST ═══════════════════════
 
      Don't fill these in during unit 3.
