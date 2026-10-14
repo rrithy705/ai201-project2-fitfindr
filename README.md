@@ -606,26 +606,130 @@ in about 1 second, with no hang:
 
      `python run_eval.py --label after` -->
 
-**What I changed:**
+**What I changed:** One rule in `tools.py::search_listings`. That's the tool
+behind MCP, so `mcp_server.py` serves the change without any edit beyond its
+description. The last non-stopword of the description is treated as the
+**item type**. A listing is kept only if that word appears in its title,
+category or style tags (`_strong_words`). The other words still rank results
+exactly as before.
 
-**Which failure it was meant to fix:**
+```python
+item_type = words[-1]          # "black boots" → "boot", "leather jacket" → "jacket"
+...
+if item_type not in _strong_words(listing):
+    continue
+```
+
+**Which failure it was meant to fix:** the one in the diagnosis. `_score`
+weighted an adjective in a title ("black", "leather") the same as the item
+noun ("boots", "jacket"). So a listing matching only the adjective tied with
+the real item, and the cheaper-first tie-break picked it. As a result,
+`black boots` returned Biker Shorts and `leather jacket under $45` returned a
+Leather Belt. And because any one word was enough to keep a listing,
+`black ballgown` was never `[]`, and the branch in `run_agent` never fired.
+I picked this over a prompt change because the model wasn't the cause. Both
+model tools styled the item they were handed correctly; they were just handed
+the wrong one.
+
+I checked it on 19 queries with no model call (search is deterministic) before
+running the test. All five criterion scenarios still pick the same top item.
+`black boots` now returns Suede Chelsea Boots, `leather jacket under $45`
+returns the Denim Jacket, and `black ballgown` returns `[]`.
 
 ### Run Log — After
 
+Produced by `python score_eval.py --label after`. It ran the same scenarios
+with the same scoring, 5 tries each, cache off. Full output is in
+[results/run_2026-10-13_1931_after.md](results/run_2026-10-13_1931_after.md),
+and the reason for every PASS/FAIL is in
+[results/score_2026-10-13_1931_after.md](results/score_2026-10-13_1931_after.md).
+
 | Criterion | Target | Try 1 | Try 2 | Try 3 | Try 4 | Try 5 | Verdict |
 |---|---|---|---|---|---|---|---|
-| 1.  |  |  |  |  |  |  |  |
-| 2.  |  |  |  |  |  |  |  |
-| 3.  |  |  |  |  |  |  |  |
-| 4.  |  |  |  |  |  |  |  |
-| 5.  |  |  |  |  |  |  |  |
+| 1. Matching query completes all three tools | 4 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 2. Impossible query stops before tool 2 | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 3. Selected item passed correctly between tools | 5 of 5 | FAIL | PASS | PASS | PASS | PASS | **MISSED (4/5)** |
+| 4. Fit card has title word, price, platform | 4 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 5. Search results stay within budget | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+
+Diagnostic probes, same check as before:
+
+| Probe | Query | Try 1 | Try 2 | Try 3 | Try 4 | Try 5 | Result |
+|---|---|---|---|---|---|---|---|
+| colour word vs item type | `black boots` | FAIL | PASS | PASS | FAIL | PASS | 3/5 |
+| material word vs item type | `leather jacket under $45` | FAIL | PASS | PASS | PASS | PASS | 4/5 |
+| impossible item with a common colour | `black ballgown` | PASS | PASS | PASS | PASS | PASS | 5/5 |
+
+**Side by side:**
+
+| | Before | After |
+|---|---|---|
+| Criterion 1 | MET (5/5) | MET (5/5) |
+| Criterion 2 | MET (5/5) | MET (5/5) |
+| Criterion 3 | MET (5/5) | **MISSED (4/5)** |
+| Criterion 4 | MET (5/5) | MET (5/5) |
+| Criterion 5 | MET (5/5) | MET (5/5) |
+| Probe `black boots` | 0/5 | 3/5 |
+| Probe `leather jacket under $45` | 0/5 | 4/5 |
+| Probe `black ballgown` | 0/5 | 5/5 |
+| Tries that hit `503 UNAVAILABLE` | 0 of 25 model-calling tries (+0 of 10 probe tries) | **8 of 35** |
 
 **Did it help, and how do I know:**
 
-<!-- If it made things worse, say that. Honestly reported, that earns full
-     credit and is more interesting than one that worked. -->
+**Yes for what it was meant to fix, but the after table doesn't show that
+cleanly, and one criterion went from MET to MISSED for a reason unrelated to
+the change.**
 
+*What the change fixed.* In every one of the 15 probe tries, the search
+returned the right thing. That includes the 3 probe tries scored FAIL: their
+`selected_item` was the correct item (Suede Chelsea Boots ×2, Denim Jacket ×1),
+as the run log shows. `black ballgown` now stops at the branch 5 of 5 times,
+with 0 model calls. Before the change, the wrong item was picked in 15 of 15
+tries. The search is deterministic, so this isn't luck. The same query now
+always gives the same right answer.
 
+*Why the probes don't read 5/5.* Those 3 FAILs, and the criterion 3 FAIL,
+all stopped with this, from `agent.py::run_agent`'s `ModelUnavailable` handler:
+
+```
+- stopped early: yes — The styling model couldn't be reached, so no outfit or fit card was written. The search still worked: the best match was Suede Chelsea Boots — Tan — $44 on poshmark. Check that GEMINI_API_KEY in .env is correct and that you're online, then run the same query again.
+(What the service said: Couldn't reach the model: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}})
+```
+
+**Diagnosis of the new criterion 3 miss.** The place is the model call, in
+`generate.py::generate`, reached from `suggest_outfit` / `create_fit_card`.
+It is not the session. Gemini returned `503 UNAVAILABLE` ("experiencing high
+demand"). `generate()` only retries errors it recognises as rate limits
+(`429`, "resource exhausted", "rate limit"), so a 503 is raised as
+`ModelUnavailable` on the **first** attempt, with no retry. The run then
+correctly stopped with no fit card, and criterion 3 needs a fit card to
+check the price. On try 1 the session did hold the right item (`Platform
+Sneakers`, `lst_019`): the search, the session and the hand-off were all
+fine. 8 of the 35 model-calling tries in this run hit it, spread across
+5 scenarios (criterion 3 ×1, criterion 5 ×2, empty wardrobe ×2, probes ×3).
+Criterion 5 still passed because it only checks search results. In the two
+earlier runs it happened 0 times.
+
+**Was the 503 caused by my change?** No. The change is in `search_listings`,
+which never calls the model. The 503 is the service saying it is overloaded.
+The prompts sent were the same shape as before. On criterion 3, the scenario
+picked the same item before and after (`lst_019`, 1 result both times), so
+the prompt was the same prompt.
+
+So I can't claim the after table shows a pure effect of the change. It shows
+the change plus a service outage. A fair reading: the change did what the
+diagnosis said it should (wrong-item picks went from 15/15 to 0/15), and it
+didn't break any criterion. The criterion 3 miss is real and stays recorded
+as MISSED. Its cause is the missing 503 retry, which is in What's Still
+Broken.
+
+*One side effect worth stating.* The rule cuts the result list down a lot:
+`vintage jeans under $35` went from 10 results to 1, and
+`vintage graphic tee under $30` from 10 to 3. The extra results were things
+like a Leather Belt and a Bucket Hat for "jeans", so nothing useful was lost
+for these queries. But a query whose last word isn't the item type
+(`jacket in black`, last word "black") still gets the old, adjective-driven
+ranking.
 
 ---
 
