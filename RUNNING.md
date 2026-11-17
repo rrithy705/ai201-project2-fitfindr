@@ -4,6 +4,77 @@ Everything about how the starter works and how to use it.
 
 ---
 
+## Capstone run path — Path B, local with logs
+
+FitFindr runs as a small web server on your own machine. It isn't hosted:
+the system only calls an API, so it would fit the free tier, but I chose
+Path B so I didn't have to sign up for a host with a card.
+
+**The command that starts it** (from the repo folder, after the one-time
+setup below):
+
+```bash
+.venv/bin/python serve.py
+```
+
+It listens on `http://localhost:5000` (set `PORT` to change it), answers one
+request at a time, and appends one JSON line per request to
+`logs/requests.jsonl`. Ask it something from a second terminal:
+
+```bash
+curl -s -X POST http://localhost:5000/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "vintage graphic tee under $30"}'
+tail -n 1 logs/requests.jsonl
+```
+
+**One-time setup, from a clean checkout** (tested by cloning the repo into an
+empty folder and following exactly these lines):
+
+```bash
+git clone <this repo's URL> fitfindr && cd fitfindr
+python3.12 -m venv .venv
+.venv/bin/pip install -r requirements-lock.txt
+cp .env.example .env        # then put your GEMINI_API_KEY in .env
+.venv/bin/python serve.py
+```
+
+**What the environment needs**
+
+| Thing | Value |
+|---|---|
+| Python | 3.12 (runs were made on 3.12.10). 3.11–3.13 are supported; **not 3.14** |
+| Dependencies | `requirements-lock.txt`: exact versions (`Flask==3.1.3`, `google-genai==1.75.0`, `mcp==1.30.0`, `python-dotenv==1.1.1`, …). `requirements.txt` holds the allowed ranges |
+| Model files | None. The model is `gemini-3.5-flash-lite` over the Gemini API, so nothing is downloaded. The data is 40 listings in `data/` (24 KB) |
+| Secrets | `GEMINI_API_KEY` in `.env` (never committed) |
+| Network | Outbound HTTPS to the Gemini API |
+
+**Settings for the bad path** (environment variables, read when the server
+starts):
+
+| Variable | Default | What it does |
+|---|---|---|
+| `AI201_LOG` | `logs/requests.jsonl` | Where the structured log goes |
+| `AI201_MODEL_TIMEOUT_S` | `20` | Timeout for each model attempt, in seconds |
+| `AI201_TRANSIENT_ATTEMPTS` | `3` | Attempts before a 503/500/timeout is given up on |
+| `AI201_TRANSIENT_BACKOFF_S` | `1` | First pause between attempts; it doubles each time |
+| `AI201_FAULT` | unset | **Testing only.** `503x1`: the first attempt of every model call fails with a 503. `503`: every attempt fails (an outage). `401`: every attempt fails as a rejected key |
+
+For example, to watch the server ride out a 503 on every first attempt:
+
+```bash
+AI201_FAULT=503x1 .venv/bin/python serve.py
+```
+
+**The test harness** for the capstone criteria starts and stops the server
+itself, once per scenario, and reads the log back:
+
+```bash
+.venv/bin/python capstone_eval.py --label before
+```
+
+---
+
 ## Before your first class
 
 Setup happens **before class**. The [environment setup page](../pages/ide_setup)
