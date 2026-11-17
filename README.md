@@ -1109,3 +1109,64 @@ low. Partly, they were:
   back-to-back queries cross the limit. C1 only asked "did the user see an
   error", and they didn't, but they waited 49 s. A tightened C1 would add
   "and 5 of 5 return within 15 s, at a pace of one query every 10 s".
+
+**The Improvement**
+
+**What I changed:** request parsing in `serve.py::_ask`, the stage the C5
+diagnosis named (commit "Reject a non-object body or a non-string query with
+a 400, not a 500"). Before the body or the query is used, their types are
+checked. A body that isn't a JSON object gets a 400 saying it must be one. A
+`query` that's present but isn't a string gets a 400 saying it must be a
+string. Each is logged as `bad_request` with the type it actually was.
+Nothing else changed: same criteria, same harness, same scenarios.
+
+**Why this one:** it was the only miss, and the diagnosis pointed at exactly
+two lines with one mechanism (valid JSON of the wrong type reaching
+`.get()`/`.strip()`). One type check per symptom fixes the mechanism rather
+than special-casing `42` and `["vintage tee"]`. Any non-object body and any
+non-string query, such as `true`, `{"query": ["a"]}` or `{"query": {}}`, is
+covered by the same two checks.
+
+Run Log — After. `.venv/bin/python capstone_eval.py --label after`, full output in
+[results/capstone_2026-11-17_0220_after.md](results/capstone_2026-11-17_0220_after.md):
+
+| Criterion | Target | Run 1 | Run 2 | Run 3 | Verdict |
+|---|---|---|---|---|---|
+| C1. A single 503 is retried and never seen | 5 of 5 | 5/5 | 5/5 | 5/5 | MET |
+| C2. Outage: ≤10 s, search kept, key not blamed | 5 of 5 | 5/5 | 5/5 | 5/5 | MET |
+| C3. Rejected key: ≤2 s, 1 attempt, no retry | 5 of 5 | 5/5 | 5/5 | 5/5 | MET |
+| C4. Every request leaves one log line | 21 of 21 | 21/21 | 21/21 | 21/21 | MET |
+| C5. Malformed input gets a 400, never a 500 | 6 of 6 | 6/6 | 6/6 | 6/6 | MET |
+
+The two requests that used to crash, after the change (client side from
+`capstone_eval.py::post`, then the server's log from
+`results/capstone_2026-11-17_0220_after_t1.jsonl`):
+
+```
+C5 | query is a number    | 400 | 1ms | {"error": "'query' must be a string, e.g. {\"query\": \"vintage graphic tee under $30\"}"}
+C5 | body is a JSON array | 400 | 1ms | {"error": "The body must be a JSON object with a 'query' field, e.g. {\"query\": \"vintage graphic tee under $30\"}"}
+{"ts": "2026-11-17T07:22:13.201+00:00", "request_id": "d2a1fd03", "body": "{\"query\": 42}", "query": null, "status": 400, "outcome": "bad_request", "selected_id": null, "fit_card_chars": 0, "error": "query is a int, not a string", "duration_ms": 0, "model_attempts": 0, "retries": 0, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 0, "prompt_tokens": 0, "output_tokens": 0, "fault": null}
+{"ts": "2026-11-17T07:22:13.202+00:00", "request_id": "4153c614", "body": "[\"vintage tee\"]", "query": null, "status": 400, "outcome": "bad_request", "selected_id": null, "fit_card_chars": 0, "error": "body is a JSON list, not an object", "duration_ms": 0, "model_attempts": 0, "retries": 0, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 0, "prompt_tokens": 0, "output_tokens": 0, "fault": null}
+```
+
+**Side by side:**
+
+| | Before | After |
+|---|---|---|
+| C1. 503 retried | MET (5/5, 5/5, 5/5) | MET (5/5, 5/5, 5/5) |
+| C2. Outage handled | MET (5/5, 5/5, 5/5) | MET (5/5, 5/5, 5/5) |
+| C3. Bad key not retried | MET (5/5, 5/5, 5/5) | MET (5/5, 5/5, 5/5) |
+| C4. Every request logged | MET (21/21 ×3) | MET (21/21 ×3) |
+| C5. Malformed → 400 | **MISSED (4/6, 4/6, 4/6)** | **MET (6/6, 6/6, 6/6)** |
+
+**Did it help?** Yes, for what it targeted: C5 went from 4/6 to 6/6 in every
+run, and the log now says *which* shape was wrong instead of
+`AttributeError`. It cost nothing elsewhere. C1–C4 hold with the same
+numbers: C2 3.3–3.8 s, C3 0.28–0.81 s, and C1's fit cards still vary (193,
+257, 228 characters for the first query). The C4 count is unchanged too: the
+two new 400s are logged like the old 500s were.
+
+What it did **not** change is the C1 latency problem from the verdicts. The
+fourth C1 query took 32 s, 49 s and 42 s across the three after runs, with
+`paced_ms` 27,845–45,228. That was expected, because nothing in this change
+touches the limiter, and it's the first item below.
