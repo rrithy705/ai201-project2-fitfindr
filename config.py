@@ -86,6 +86,20 @@ REQUESTS_PER_MINUTE = 15
 SESSION_REQUEST_BUDGET = 300
 MAX_RETRIES = 5
 
+# ─── CAPSTONE: transient failures ────────────────────────────────────────────
+# A 503, a 500 or a timeout usually clears in a second or two, so it's retried
+# — but only a few times, because the user is waiting. Three attempts with a
+# 1s then 2s pause is at most ~3s of waiting plus three timeouts. A bad key is
+# never retried; see generate.py::_classify.
+#
+# MODEL_TIMEOUT_S is per attempt. A fit card normally comes back in 1-3s, so
+# 20s is long enough never to cut off a real answer and short enough that a
+# hung call doesn't hold serve.py's one-at-a-time lock for minutes.
+
+TRANSIENT_ATTEMPTS = int(os.getenv("AI201_TRANSIENT_ATTEMPTS", "3"))
+TRANSIENT_BACKOFF_S = float(os.getenv("AI201_TRANSIENT_BACKOFF_S", "1"))
+MODEL_TIMEOUT_S = float(os.getenv("AI201_MODEL_TIMEOUT_S", "20"))
+
 CACHE_DIR = ROOT / ".cache"
 
 

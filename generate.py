@@ -43,6 +43,7 @@ _prompt_tokens = 0
 _output_tokens = 0
 _client = None
 _budget_warned = False
+_retries = 0          # CAPSTONE: transient + rate-limit retries this session
 
 
 class QuotaGuard(Exception):
@@ -57,7 +58,20 @@ class ModelUnavailable(Exception):
     This exists so your agent can catch one specific thing and say something
     useful, instead of showing a user a stack trace. Unit 4 Milestone 2 has you
     trigger it deliberately by changing one character of your key.
+
+    CAPSTONE: `kind` says which failure it was, so the agent can give advice
+    that fits it instead of always blaming the key:
+
+        "auth"        the key was rejected           → check the key
+        "not_found"   the model name didn't resolve  → check AI201_MODEL
+        "overloaded"  503/500 on every attempt       → wait and try again
+        "timeout"     timed out / no connection on every attempt
+        "other"       anything else
     """
+
+    def __init__(self, message: str, kind: str = "other"):
+        super().__init__(message)
+        self.kind = kind
 
 
 # ─── Cache ───────────────────────────────────────────────────────────────────
@@ -156,6 +170,19 @@ def call_count() -> int:
     return _session_calls
 
 
+def stats() -> dict:
+    """
+    CAPSTONE: every counter in one dict, so serve.py can log what one request
+    spent by subtracting a snapshot taken before it from one taken after.
+    """
+    return {
+        "model_attempts": _session_calls,
+        "retries": _retries,
+        "prompt_tokens": _prompt_tokens,
+        "output_tokens": _output_tokens,
+    }
+
+
 def token_counts() -> dict:
     """
     What this session actually spent, in tokens, as reported by the service.
@@ -201,6 +228,79 @@ def _record_tokens(response) -> None:
 # ─── The call ────────────────────────────────────────────────────────────────
 
 
+# ─── CAPSTONE: sorting failures ──────────────────────────────────────────────
+#
+# Before the capstone, generate() retried only rate limits. Everything else —
+# including a 503 "model is experiencing high demand", which goes away by
+# itself a second later — was raised on the first attempt, and the agent told
+# the user to check their key. The unit 4 after run lost 8 of 35 tries to that.
+#
+# Now each failure is one of:
+#   rate_limit  429 / resource exhausted     → wait as long as the service asks
+#   transient   503, 500, 502, 504, timeout,  → retry with a short backoff, up
+#               connection reset                to TRANSIENT_ATTEMPTS in total
+#   permanent   bad key, unknown model, …     → raise at once. Retrying a bad
+#                                               key only makes the user wait.
+
+_TRANSIENT_MARKERS = (
+    "503", "500", "502", "504", "unavailable", "overloaded", "high demand",
+    "internal error", "deadline", "timed out", "timeout", "connection",
+    "network", "temporarily",
+)
+
+
+def _classify(exc: Exception) -> str:
+    message = str(exc).lower()
+    if (
+        "429" in message
+        or "resource" in message and "exhaust" in message
+        or "rate" in message and "limit" in message
+    ):
+        return "rate_limit"
+    # A rejected key is permanent even if the message happens to contain a
+    # transient-looking word, so check it first.
+    if "api key" in message or "api_key" in message or "unauthenticated" in message \
+            or "permission_denied" in message or "401" in message or "403" in message:
+        return "auth"
+    if "not found" in message or "404" in message:
+        return "not_found"
+    if any(marker in message for marker in _TRANSIENT_MARKERS):
+        return "transient"
+    return "other"
+
+
+def _injected_fault(attempt: int) -> Exception | None:
+    """
+    CAPSTONE test hook. `AI201_FAULT` makes an attempt fail *before* it goes to
+    the network, so the bad path can be tested on demand instead of waiting for
+    the service to have a bad day:
+
+        AI201_FAULT=503x1   the first attempt of every call fails with a 503
+        AI201_FAULT=503     every attempt fails with a 503 (a real outage)
+        AI201_FAULT=401     every attempt fails as a rejected key
+
+    The exception goes through exactly the same handling as a real one. Unset
+    (the default) it does nothing. Read on every call so a test can change it.
+    """
+    spec = os.getenv("AI201_FAULT", "").strip().lower()
+    if not spec:
+        return None
+    code, _, times = spec.partition("x")
+    if times and attempt >= int(times):
+        return None
+    if code == "503":
+        return RuntimeError(
+            "503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is "
+            "currently experiencing high demand. (injected by AI201_FAULT)'}}"
+        )
+    if code == "401":
+        return RuntimeError(
+            "400 INVALID_ARGUMENT. API key not valid. Please pass a valid API "
+            "key. (injected by AI201_FAULT)"
+        )
+    return None
+
+
 def _explain(exc: Exception) -> str:
     """Turn a provider exception into something a person can act on."""
     message = str(exc).lower()
@@ -215,8 +315,19 @@ def _explain(exc: Exception) -> str:
             f"AI201_MODEL in your .env, put it back. Otherwise post in the help "
             f"channel — this is not something you caused."
         )
-    if "connection" in message or "timeout" in message or "network" in message:
-        return "Couldn't reach the model. Check your internet connection and try again."
+    if "503" in message or "unavailable" in message or "high demand" in message \
+            or "overloaded" in message:
+        return (
+            f"The model service is overloaded right now (still failing after "
+            f"{config.TRANSIENT_ATTEMPTS} attempts). Your key is fine."
+        )
+    if "connection" in message or "timeout" in message or "timed out" in message \
+            or "network" in message:
+        return (
+            f"Couldn't reach the model: no answer within "
+            f"{config.MODEL_TIMEOUT_S:g}s on any of {config.TRANSIENT_ATTEMPTS} "
+            f"attempts. Check your internet connection and try again."
+        )
     return f"Couldn't reach the model: {exc}"
 
 
@@ -253,7 +364,17 @@ def _get_client():
                 "Copy .env.example to .env and paste your key in, then try "
                 "again. `python test.py` will confirm it's working."
             )
-        _client = genai.Client(api_key=key)
+        from google.genai import types
+
+        # CAPSTONE: a timeout on every request. Without one, a call the service
+        # never answers hangs the run — and on serve.py, every request queued
+        # behind it. A timeout counts as transient and is retried.
+        _client = genai.Client(
+            api_key=key,
+            http_options=types.HttpOptions(
+                timeout=int(config.MODEL_TIMEOUT_S * 1000)
+            ),
+        )
     return _client
 
 
@@ -281,7 +402,7 @@ def generate(
     Every call in this course goes through here. If you need to change how the
     model is called, change it in this one place.
     """
-    global _session_calls, _cache_hits
+    global _session_calls, _cache_hits, _retries
 
     use_cache = cache and config.CACHE_ENABLED
     temperature = config.TEMPERATURE if temperature is None else temperature
@@ -296,12 +417,17 @@ def generate(
     _check_budget()
 
     last_error: Exception | None = None
+    transient_failures = 0
     for attempt in range(config.MAX_RETRIES):
         _wait_for_slot()
         try:
             client = _get_client()
             _call_times.append(time.monotonic())
             _session_calls += 1
+
+            fault = _injected_fault(attempt)
+            if fault is not None:
+                raise fault
 
             call_config = {"temperature": temperature}
             if system:
@@ -321,16 +447,39 @@ def generate(
             return text
 
         except Exception as exc:  # noqa: BLE001 — surfaced below
+            if isinstance(exc, RuntimeError) and "No GEMINI_API_KEY" in str(exc):
+                raise
             last_error = exc
-            message = str(exc).lower()
-            rate_limited = (
-                "429" in message
-                or "resource" in message and "exhaust" in message
-                or "rate" in message and "limit" in message
-            )
-            if not rate_limited:
-                raise ModelUnavailable(_explain(exc)) from exc
+            kind = _classify(exc)
+
+            if kind == "transient":
+                transient_failures += 1
+                if transient_failures >= config.TRANSIENT_ATTEMPTS:
+                    timed_out = any(w in str(exc).lower() for w in
+                                    ("timed out", "timeout", "connection", "network"))
+                    raise ModelUnavailable(
+                        _explain(exc), "timeout" if timed_out else "overloaded"
+                    ) from exc
+                backoff = config.TRANSIENT_BACKOFF_S * (2 ** (transient_failures - 1))
+                _retries += 1
+                print(
+                    f"  [retry] {type(exc).__name__}: {str(exc).splitlines()[0][:90]} "
+                    f"— waiting {backoff:g}s (attempt {transient_failures} of "
+                    f"{config.TRANSIENT_ATTEMPTS}).",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                time.sleep(backoff)
+                continue
+
+            if kind != "rate_limit":
+                raise ModelUnavailable(
+                    _explain(exc), "auth" if kind == "auth" else
+                    "not_found" if kind == "not_found" else "other"
+                ) from exc
+
             backoff = _retry_delay(exc, attempt)
+            _retries += 1
             print(
                 f"  [rate limit] service pushed back. Waiting {backoff:.0f}s "
                 f"(attempt {attempt + 1} of {config.MAX_RETRIES}). This is "
