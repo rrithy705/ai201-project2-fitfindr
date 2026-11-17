@@ -185,7 +185,22 @@ def ask():
 
 def _ask(record: dict):
     payload = request.get_json(silent=True) or {}
-    query = (payload.get("query") or "").strip()
+    # CAPSTONE improvement: silent=True only covers a body that isn't JSON.
+    # Valid JSON of the wrong type — a list, or a query that's a number —
+    # used to reach .get()/.strip() and crash into a 500. Check types first.
+    if not isinstance(payload, dict):
+        record["outcome"] = "bad_request"
+        record["error"] = f"body is a JSON {type(payload).__name__}, not an object"
+        return jsonify({"error": "The body must be a JSON object with a 'query' "
+                                 'field, e.g. {"query": "vintage graphic tee under '
+                                 '$30"}'}), 400
+    raw_query = payload.get("query")
+    if raw_query is not None and not isinstance(raw_query, str):
+        record["outcome"] = "bad_request"
+        record["error"] = f"query is a {type(raw_query).__name__}, not a string"
+        return jsonify({"error": "'query' must be a string, e.g. "
+                                 '{"query": "vintage graphic tee under $30"}'}), 400
+    query = (raw_query or "").strip()
     if not query:
         # 400 rather than a stack trace: the caller can act on this one.
         record["outcome"] = "bad_request"
