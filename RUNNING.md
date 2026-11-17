@@ -39,6 +39,19 @@ cp .env.example .env        # then put your GEMINI_API_KEY in .env
 .venv/bin/python serve.py
 ```
 
+**What broke the first time I followed this from a clean clone:**
+`python3` on my Mac is 3.14 (not supported), and `python3.12` there is a
+Python installed by `uv`. `python3.12 -m venv` made a venv that couldn't start
+(`ModuleNotFoundError: No module named 'encodings'`). If that happens to you,
+make the venv with uv instead. These lines worked from the same clean clone:
+
+```bash
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -r requirements-lock.txt
+cp .env.example .env        # then put your GEMINI_API_KEY in .env
+.venv/bin/python serve.py
+```
+
 **What the environment needs**
 
 | Thing | Value |
