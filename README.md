@@ -1025,7 +1025,7 @@ plus one server log per run (`..._before_t1.jsonl` to `_t3.jsonl`).
 | C5. Malformed input gets a 400, never a 500 | 6 of 6 | 4/6 | 4/6 | 4/6 | **MISSED** |
 
 The model runs really were re-run. C1's fit cards differ between runs (215,
-227 and 205 characters for the first query), and their durations vary from
+223 and 168 characters for the first query), and their durations vary from
 3.6 s to 49 s, while C2, C3 and C5 hit the injected fault before the network
 and come out almost identical every time (C2 3.3–3.9 s, C3 0.27–0.82 s).
 
