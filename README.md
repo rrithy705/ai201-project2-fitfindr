@@ -848,3 +848,51 @@ unit.
 ---
 
 📖 **How to run this project: [RUNNING.md](RUNNING.md)**
+
+---
+
+## Capstone
+
+**What This Extends**
+
+FitFindr, the unit 3/4 shopping agent: parse a query, search 40 listings over
+MCP, then two Gemini calls (`suggest_outfit`, `create_fit_card`). What's new
+this unit is the bad path of the model calls. Until now, any non-rate-limit
+error from Gemini stopped the run on the first attempt, and the user was always
+told to check `GEMINI_API_KEY`, even when the key was fine and the service was
+just busy (What's Still Broken, items 1 and 2, from the unit 4 after run). The
+system now also runs as a server (`serve.py`) with a structured log of every
+request.
+
+**The Shape**
+
+**B: Harden against failure.** I'm adding one hardening layer, around the
+model call in `generate.py::generate`:
+
+- errors are sorted into **transient** (503 / 500 / overloaded / timeout /
+  connection) and **permanent** (bad key, unknown model, bad request);
+- transient errors are retried with a short backoff, and each attempt has a
+  timeout so one hung call can't hang the run;
+- permanent errors are *not* retried, so a bad key still fails fast;
+- `ModelUnavailable` carries the kind of failure, and `agent.py::run_agent`
+  tells the user what to do for that kind ("wait a minute" for an outage,
+  "check your key" only for a key problem).
+
+To test the bad path on purpose instead of waiting for Gemini to have a bad
+day, `AI201_FAULT` makes the model call fail in a chosen way before it
+reaches the network (see RUNNING.md). Logging and the run path (shape A's
+work) come along as required, but they aren't the extension.
+
+**Out of scope**, decided now:
+
+- **The search.** I'm not touching `_score`, the item-type rule or the price
+  parser (What's Still Broken items 3 and 4). They're real, but they're a
+  different stage and a different shape (C).
+- **Hosting.** This runs locally (Path B). I'm not signing up for a host or
+  adding a container.
+- **Concurrency.** `serve.py` stays one request at a time. I'm not adding a
+  queue or making `generate.py`'s rate limiter thread-safe.
+- **Prompts and the model.** No prompt changes, no second model as a
+  fallback.
+
+No stretch goals.
