@@ -1170,3 +1170,86 @@ What it did **not** change is the C1 latency problem from the verdicts. The
 fourth C1 query took 32 s, 49 s and 42 s across the three after runs, with
 `paced_ms` 27,845–45,228. That was expected, because nothing in this change
 touches the limiter, and it's the first item below.
+
+**What's Still Broken**
+
+All five criteria are MET after the improvement, so nothing here is a missed
+criterion. What is here: the targets that were too easy, and one problem the
+log found that no criterion was written to catch.
+
+**1. C1 says nothing about time, and a 503 on every first attempt costs up
+to 49 s.** The extra attempts count against the 15-calls-a-minute limiter in
+`generate.py::_wait_for_slot`. Five back-to-back queries with a retry on
+every call need 20 attempts, so the fourth query waits on the limiter
+(`paced_ms` up to 45,228). The user still gets a card, so C1 passes, but
+they'd assume it was broken. *Tightened target:* "at one query every 10 s,
+with `AI201_FAULT=503x1`, 5 of 5 return within 15 s". *What I'd do:* stop
+counting a failed attempt against the per-minute window when the service
+answered 503, if Gemini's quota really doesn't count those. I don't know
+whether it does, and finding out means testing against the real quota rather
+than the injected fault. *Why I stopped:* that's a second change needing its
+own before/after, and the unit allows one.
+
+**2. C3's 2,000 ms and C2's 10,000 ms were set loose.** The real numbers
+were 270–820 ms and 3.3–3.9 s. I'd tighten **C3 to 1,000 ms**, the one I'd
+change first, since that's where a single wrong 1 s backoff would show, and
+**C2 to 5,000 ms** (3,000 ms of backoff by design, plus search).
+
+**3. Only injected 503s and 401s were tested, and only one real timeout.** The
+timeout path ran once against the real network (`AI201_MODEL_TIMEOUT_S=0.05`
+in Milestone 2: 3 attempts, `kind` "timeout", 3.85 s), but there's no
+criterion for it. And `_classify` sorts failures by matching words in the
+error text, which is how the unit 4 bug happened in the first place. A
+real 503 whose wording differs from my injected one would fall through to
+`other` and not be retried. *What I'd do:* classify on the SDK's status code
+(`google.genai.errors.APIError.code`) where there is one, and keep the text
+match only as a fallback.
+
+**4. The search problems from unit 4 are still there** (item type taken from
+the last word, unparsed price phrasings). They were out of scope on purpose.
+
+**What I'd do next, if this were real:** fix item 3 first: classify on the
+status code, not the message text. Every other part of this extension (the
+retry, the advice to the user, the log's `outcome`) depends on that
+classification being right, and right now it's right only for the wording I
+tested. It is the same bug as unit 4 (a handler tested against one cause)
+moved one layer down.
+
+**How I Used AI**
+
+I used Claude Code (Claude Opus 5.5) for the whole capstone. I asked it to
+complete the project from the brief: it picked the shape, wrote the code,
+the harness and the README sections, and **drafted the five criteria in
+criteria.md**. The brief asks for the criteria to be written by me, not a
+model, so I'm saying so here rather than presenting them as mine.
+
+**Capstone, Moment 1: a test that passed without testing anything**
+
+*What I asked for:* a logged session with failures in it, including a server
+started with `AI201_FAULT=503`, to paste under Instrumentation.
+
+*What came back:* 14 log lines, and the injected-outage request came back
+`"outcome": "ok"` with a fit card. Read alone, that looks like the outage
+handling working perfectly.
+
+*What I changed:* the same line said `"model_attempts": 0`. The response
+cache had answered the request, so the fault never fired. We added
+`cache_hits`, `paced_ms` and `backoff_ms` to the log, re-ran the session with
+`AI201_CACHE=0`, made every capstone test run cache-off, and wrote C1 to
+require `retries` = 2 in the log rather than just "a card came back". The
+same session also showed a 44 s request with 0 retries, which turned out to
+be the rate limiter, and that is now What's Still Broken item 1.
+
+**Capstone, Moment 2: a number written before it was checked**
+
+*What I asked for:* the Run Log and Verdicts section, with evidence that the
+model was really re-run between trials.
+
+*What came back:* a sentence saying C1's first fit card was "215, 227 and 205
+characters" across the three runs.
+
+*What I changed:* we read `fit_card_chars` back out of the three log files.
+Only 215 was right; the real values were 215, 223 and 168. It was corrected
+in its own commit ("Correct the C1 fit card lengths to the logged values").
+The point stands either way (the cards differ), but a number in an evidence
+section has to come from the evidence, and this one didn't.
