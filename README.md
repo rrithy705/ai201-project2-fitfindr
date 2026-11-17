@@ -1005,3 +1005,107 @@ limit; the 15-a-minute rate is. If 100 people asked within the same minute,
 `serve.py` handles one at a time and the limiter allows 7 runs a minute, so
 the last person would wait about 14 minutes. A failed run costs less, not
 more: the outage in row 14 made 3 attempts and used 0 tokens.
+
+**Run Log and Verdicts**
+
+Criteria are C1–C5 in [criteria.md](criteria.md), under "Capstone criteria".
+They were committed in `98a4069`, before the first results commit (`56f72d4`).
+Produced by `.venv/bin/python capstone_eval.py --label before`. Each run
+restarts `serve.py` once per scenario, with the cache off, and scores what
+the client received against what the server logged. Full output:
+[results/capstone_2026-11-17_0215_before.md](results/capstone_2026-11-17_0215_before.md),
+plus one server log per run (`..._before_t1.jsonl` to `_t3.jsonl`).
+
+| Criterion | Target | Run 1 | Run 2 | Run 3 | Verdict |
+|---|---|---|---|---|---|
+| C1. A single 503 is retried and never seen | 5 of 5 | 5/5 | 5/5 | 5/5 | MET |
+| C2. Outage: ≤10 s, search kept, key not blamed | 5 of 5 | 5/5 | 5/5 | 5/5 | MET |
+| C3. Rejected key: ≤2 s, 1 attempt, no retry | 5 of 5 | 5/5 | 5/5 | 5/5 | MET |
+| C4. Every request leaves one log line | 21 of 21 | 21/21 | 21/21 | 21/21 | MET |
+| C5. Malformed input gets a 400, never a 500 | 6 of 6 | 4/6 | 4/6 | 4/6 | **MISSED** |
+
+The model runs really were re-run. C1's fit cards differ between runs (215,
+227 and 205 characters for the first query), and their durations vary from
+3.6 s to 49 s, while C2, C3 and C5 hit the injected fault before the network
+and come out almost identical every time (C2 3.3–3.9 s, C3 0.27–0.82 s).
+
+Real output, run 1, from `results/capstone_2026-11-17_0215_before_t1.jsonl`.
+Each line was written by `serve.py::ask`. The behaviour comes from
+`generate.py::generate` (retry and classification) and `agent.py::run_agent`
+(the message):
+
+C1, `AI201_FAULT=503x1`: recovered with 2 retries and 2,000 ms of backoff,
+then a real card was written:
+```
+{"ts": "2026-11-17T07:15:09.146+00:00", "request_id": "69e4a981", "body": "{\"query\": \"vintage graphic tee under $30\"}", "query": "vintage graphic tee under $30", "status": 200, "outcome": "ok", "selected_id": "lst_002", "fit_card_chars": 215, "error": null, "duration_ms": 4458, "model_attempts": 4, "retries": 2, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 2000, "prompt_tokens": 517, "output_tokens": 145, "fault": "503x1"}
+```
+
+C2, `AI201_FAULT=503`: 3 attempts, 3,000 ms of backoff, 3.8 s total, search
+kept, "your key is fine … Wait a minute":
+```
+{"ts": "2026-11-17T07:16:14.873+00:00", "request_id": "494db37e", "body": "{\"query\": \"vintage graphic tee under $30\"}", "query": "vintage graphic tee under $30", "status": 200, "outcome": "model_overloaded", "selected_id": "lst_002", "fit_card_chars": 0, "error": "The styling model couldn't be reached, so no outfit or fit card was written. The search still worked: the best match was Y2K Baby Tee — Butterfly Print — $18 on depop. The model service is busy right now and your key is fine. Wait a minute, then run the same query again.", "duration_ms": 3810, "model_attempts": 3, "retries": 2, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 3000, "prompt_tokens": 0, "output_tokens": 0, "fault": "503"}
+```
+
+C3, `AI201_FAULT=401`: one attempt, no backoff, 818 ms, names the key:
+```
+{"ts": "2026-11-17T07:16:32.206+00:00", "request_id": "d2fb35e7", "body": "{\"query\": \"vintage graphic tee under $30\"}", "query": "vintage graphic tee under $30", "status": 200, "outcome": "model_auth", "selected_id": "lst_002", "fit_card_chars": 0, "error": "The styling model couldn't be reached, so no outfit or fit card was written. The search still worked: the best match was Y2K Baby Tee — Butterfly Print — $18 on depop. Check that GEMINI_API_KEY in .env is correct, then run the same query again.", "duration_ms": 818, "model_attempts": 1, "retries": 0, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 0, "prompt_tokens": 0, "output_tokens": 0, "fault": "401"}
+```
+
+C4: each run sent 21 requests, and each `_t*.jsonl` has 21 lines whose
+`status` matches what the client got. That includes the two 500s below,
+because the log write is in a `finally`.
+
+C5: four shapes got a 400; two crashed. What the client received
+(`capstone_eval.py::post`) and what the server logged:
+```
+C5 | query is a number    | 500 | <!doctype html> <title>500 Internal Server Error</title> ...
+C5 | body is a JSON array | 500 | <!doctype html> <title>500 Internal Server Error</title> ...
+{"ts": "2026-11-17T07:16:34.363+00:00", "request_id": "e25b5bad", "body": "{\"query\": \"   \"}", "query": null, "status": 400, "outcome": "bad_request", "selected_id": null, "fit_card_chars": 0, "error": "no query", "duration_ms": 0, "model_attempts": 0, "retries": 0, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 0, "prompt_tokens": 0, "output_tokens": 0, "fault": null}
+{"ts": "2026-11-17T07:16:34.364+00:00", "request_id": "9bf5406e", "body": "{\"query\": 42}", "query": null, "status": 500, "outcome": "server_error", "selected_id": null, "fit_card_chars": 0, "error": "AttributeError: 'int' object has no attribute 'strip'", "duration_ms": 0, "model_attempts": 0, "retries": 0, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 0, "prompt_tokens": 0, "output_tokens": 0, "fault": null}
+{"ts": "2026-11-17T07:16:34.367+00:00", "request_id": "b6a3ef9a", "body": "[\"vintage tee\"]", "query": null, "status": 500, "outcome": "server_error", "selected_id": null, "fit_card_chars": 0, "error": "AttributeError: 'list' object has no attribute 'get'", "duration_ms": 0, "model_attempts": 0, "retries": 0, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 0, "prompt_tokens": 0, "output_tokens": 0, "fault": null}
+```
+
+**Verdicts.** C1–C4 MET: every request in all three runs met the target,
+so the target held, not just turned up. C5 MISSED: 4 of 6 in every run, the
+same two requests every time.
+
+**Diagnosis of the C5 miss.** The stage is request parsing in
+`serve.py::_ask`, before the agent is ever called. The mechanism is these
+two lines:
+
+```python
+payload = request.get_json(silent=True) or {}
+query = (payload.get("query") or "").strip()
+```
+
+`silent=True` only protects against a body that *isn't JSON*. That's why
+"not JSON" and "no body" get a 400. But `42` and `["vintage tee"]` are
+valid JSON, so they parse. The code then assumes the body is an object and
+the query is a string. A list has no `.get` (`AttributeError: 'list' object
+has no attribute 'get'`) and an int has no `.strip`
+(`AttributeError: 'int' object has no attribute 'strip'`). Those lines sit
+outside the only `try` in the function, which wraps `run_agent`, so the
+exception reaches Flask and becomes its HTML 500 page. So this is one problem
+with two symptoms: valid JSON of the wrong *type* is treated as a server
+fault. My extension didn't cause it. The two lines are unchanged from the
+starter's `serve.py`. It only became visible because C5 sent the shapes.
+
+**The pattern, and what C1–C4 meeting means.** All four extension criteria
+met their targets in every run, so I should say whether the targets were set
+low. Partly, they were:
+
+- **C3's 2,000 ms is loose.** The real numbers were 270–820 ms (the 800 ms
+  ones are the first request after a server start, when MCP spins up). A
+  target of **1,000 ms** would still pass and would catch a single 1 s
+  backoff sneaking in. That's the target I'd tighten first.
+- **C2's 10,000 ms** against a real 3.3–3.9 s is also loose. **5,000 ms**
+  is the honest target: the backoff is 3,000 ms by design, plus about a second
+  for search.
+- **C1 has no time target at all, and the log shows why it should.** In all
+  three runs the fourth query took 24–49 s, with `paced_ms` of 19,651–45,451.
+  Every retry counts against the client's 15-calls-a-minute limiter (it has
+  to, because a real 503 attempt reaches the service and counts against its
+  quota too). So a 503 on every first attempt doubles the calls, and five
+  back-to-back queries cross the limit. C1 only asked "did the user see an
+  error", and they didn't, but they waited 49 s. A tightened C1 would add
+  "and 5 of 5 return within 15 s, at a pace of one query every 10 s".
