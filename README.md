@@ -896,3 +896,112 @@ work) come along as required, but they aren't the extension.
   fallback.
 
 No stretch goals.
+
+**Running It**
+
+Path B, local with logs. `PORT=5050 .venv/bin/python serve.py` starts it.
+Setup from a clean checkout, the Python version, the pinned dependencies
+(`requirements-lock.txt`) and the environment variables are all in
+[RUNNING.md](RUNNING.md). There's no local model: the model is
+`gemini-3.5-flash-lite` over the API.
+
+Following RUNNING.md from a fresh clone failed twice before it worked, and
+both fixes are written into it. First, `python3.12 -m venv` made a broken
+venv on this Mac, because that Python was installed by uv, so RUNNING.md
+gives the `uv venv` lines that worked. Second, macOS AirPlay already listens
+on port 5000 and answers `403` itself. My whole first logged session got
+14 × 403 and nothing was logged, so the documented command uses `PORT=5050`.
+
+**Instrumentation**
+
+`serve.py::ask` writes one JSON line per `POST /ask` to `logs/requests.jsonl`
+(or `AI201_LOG`). The write is in a `finally`, so rejected and crashed
+requests are logged too. Token and retry counts are the difference in
+`generate.py::stats()` before and after the run, taken inside the
+one-at-a-time lock so they belong to that request alone.
+
+| Field | What it holds |
+|---|---|
+| `ts`, `request_id` | arrival time (UTC) and an 8-char id |
+| `body`, `query` | what came in: the raw body (first 200 chars) and the parsed query |
+| `status`, `outcome` | HTTP status, and `ok` / `empty_search` / `no_item_words` / `model_overloaded` / `model_timeout` / `model_auth` / `bad_request` / `server_error` / … |
+| `selected_id`, `fit_card_chars`, `error` | what came out: the listing picked, the card's length, the first line of any error |
+| `duration_ms` | arrival to response |
+| `model_attempts`, `retries`, `backoff_ms` | model calls tried (failed ones included), how many were retries, seconds slept between them |
+| `cache_hits`, `paced_ms` | answers reused from `.cache/`, and time spent waiting on the 15-a-minute limiter |
+| `prompt_tokens`, `output_tokens` | as reported by the service |
+| `fault` | `AI201_FAULT`, when a failure was injected for testing |
+
+The last three fields were added after the first logged session
+(`logs/2026-11-17_session1_cache-on.jsonl`), because the log couldn't explain
+two of its rows. One was a 44-second request with `retries: 0`; the server's
+stderr showed `[rate limit] 15 requests used this minute. Waiting 41s`. The
+other was a request sent with `AI201_FAULT=503` that came back `ok` with
+`model_attempts: 0`. It was answered from the response cache, so the outage
+was never tested. Every test run since has been made with `AI201_CACHE=0`.
+
+Sixteen entries from the second session, cache off,
+`logs/2026-11-17_session2_cache-off.jsonl`. Rows 1–10 are the cost sample.
+Row 11 is an empty search, 12–13 are rejected inputs, and 14–16 are failures
+injected on purpose: an outage (503 on every attempt), a rejected key, and a
+single 503 that was retried and recovered.
+
+```
+{"ts": "2026-11-17T07:10:41.099+00:00", "request_id": "00e5f256", "body": "{\"query\": \"vintage graphic tee under $30\"}", "query": "vintage graphic tee under $30", "status": 200, "outcome": "ok", "selected_id": "lst_002", "fit_card_chars": 223, "error": null, "duration_ms": 5444, "model_attempts": 2, "retries": 0, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 0, "prompt_tokens": 493, "output_tokens": 120, "fault": null}
+{"ts": "2026-11-17T07:10:54.572+00:00", "request_id": "07a4f124", "body": "{\"query\": \"90s track jacket in size M\"}", "query": "90s track jacket in size M", "status": 200, "outcome": "ok", "selected_id": "lst_004", "fit_card_chars": 219, "error": null, "duration_ms": 1796, "model_attempts": 2, "retries": 0, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 0, "prompt_tokens": 496, "output_tokens": 123, "fault": null}
+{"ts": "2026-11-17T07:11:04.400+00:00", "request_id": "e7c0bda1", "body": "{\"query\": \"platform sneakers size 8\"}", "query": "platform sneakers size 8", "status": 200, "outcome": "ok", "selected_id": "lst_019", "fit_card_chars": 206, "error": null, "duration_ms": 1761, "model_attempts": 2, "retries": 0, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 0, "prompt_tokens": 483, "output_tokens": 112, "fault": null}
+{"ts": "2026-11-17T07:11:14.190+00:00", "request_id": "a9199e01", "body": "{\"query\": \"vintage jeans under $35\"}", "query": "vintage jeans under $35", "status": 200, "outcome": "ok", "selected_id": "lst_037", "fit_card_chars": 230, "error": null, "duration_ms": 1718, "model_attempts": 2, "retries": 0, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 0, "prompt_tokens": 495, "output_tokens": 124, "fault": null}
+{"ts": "2026-11-17T07:11:23.940+00:00", "request_id": "25c68dee", "body": "{\"query\": \"denim jacket under $50\"}", "query": "denim jacket under $50", "status": 200, "outcome": "ok", "selected_id": "lst_007", "fit_card_chars": 247, "error": null, "duration_ms": 1817, "model_attempts": 2, "retries": 0, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 0, "prompt_tokens": 511, "output_tokens": 146, "fault": null}
+{"ts": "2026-11-17T07:11:33.789+00:00", "request_id": "c9e74fab", "body": "{\"query\": \"black boots\"}", "query": "black boots", "status": 200, "outcome": "ok", "selected_id": "lst_028", "fit_card_chars": 177, "error": null, "duration_ms": 9581, "model_attempts": 2, "retries": 0, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 0, "prompt_tokens": 484, "output_tokens": 117, "fault": null}
+{"ts": "2026-11-17T07:11:51.396+00:00", "request_id": "d6deaa19", "body": "{\"query\": \"leather jacket under $45\"}", "query": "leather jacket under $45", "status": 200, "outcome": "ok", "selected_id": "lst_007", "fit_card_chars": 198, "error": null, "duration_ms": 9442, "model_attempts": 2, "retries": 0, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 0, "prompt_tokens": 521, "output_tokens": 147, "fault": null}
+{"ts": "2026-11-17T07:12:08.868+00:00", "request_id": "4839322f", "body": "{\"query\": \"corduroy pants\"}", "query": "corduroy pants", "status": 200, "outcome": "ok", "selected_id": "lst_005", "fit_card_chars": 249, "error": null, "duration_ms": 1845, "model_attempts": 2, "retries": 0, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 0, "prompt_tokens": 499, "output_tokens": 139, "fault": null}
+{"ts": "2026-11-17T07:12:18.742+00:00", "request_id": "f57d15d0", "body": "{\"query\": \"bucket hat\"}", "query": "bucket hat", "status": 200, "outcome": "ok", "selected_id": "lst_034", "fit_card_chars": 254, "error": null, "duration_ms": 1596, "model_attempts": 2, "retries": 0, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 0, "prompt_tokens": 494, "output_tokens": 130, "fault": null}
+{"ts": "2026-11-17T07:12:28.358+00:00", "request_id": "9962e75e", "body": "{\"query\": \"cargo pants under $40\"}", "query": "cargo pants under $40", "status": 200, "outcome": "ok", "selected_id": "lst_011", "fit_card_chars": 314, "error": null, "duration_ms": 3859, "model_attempts": 2, "retries": 0, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 0, "prompt_tokens": 491, "output_tokens": 143, "fault": null}
+{"ts": "2026-11-17T07:12:40.248+00:00", "request_id": "ba33d29a", "body": "{\"query\": \"designer ballgown size XXS under $5\"}", "query": "designer ballgown size XXS under $5", "status": 200, "outcome": "empty_search", "selected_id": null, "fit_card_chars": 0, "error": "No listings matched 'designer ballgown' in size XXS under $5. To find something, try different words for the item — nothing in the listings matches those words at any size or price. Broader terms like 'tee', 'jacket', 'jeans' or 'sneakers' cover more of the data.", "duration_ms": 852, "model_attempts": 0, "retries": 0, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 0, "prompt_tokens": 0, "output_tokens": 0, "fault": null}
+{"ts": "2026-11-17T07:12:41.107+00:00", "request_id": "70d21c74", "body": "{\"query\": \"\"}", "query": null, "status": 400, "outcome": "bad_request", "selected_id": null, "fit_card_chars": 0, "error": "no query", "duration_ms": 0, "model_attempts": 0, "retries": 0, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 0, "prompt_tokens": 0, "output_tokens": 0, "fault": null}
+{"ts": "2026-11-17T07:12:41.114+00:00", "request_id": "261db88d", "body": "not json at all", "query": null, "status": 400, "outcome": "bad_request", "selected_id": null, "fit_card_chars": 0, "error": "no query", "duration_ms": 0, "model_attempts": 0, "retries": 0, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 0, "prompt_tokens": 0, "output_tokens": 0, "fault": null}
+{"ts": "2026-11-17T07:12:46.160+00:00", "request_id": "e1c06214", "body": "{\"query\": \"denim jacket under $50\"}", "query": "denim jacket under $50", "status": 200, "outcome": "model_overloaded", "selected_id": "lst_007", "fit_card_chars": 0, "error": "The styling model couldn't be reached, so no outfit or fit card was written. The search still worked: the best match was Denim Jacket — Light Wash, Cropped — $42 on poshmark. The model service is busy right now and your key is fine. Wait a minute, then run the same query again.", "duration_ms": 3848, "model_attempts": 3, "retries": 2, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 3000, "prompt_tokens": 0, "output_tokens": 0, "fault": "503"}
+{"ts": "2026-11-17T07:12:55.076+00:00", "request_id": "2fd35925", "body": "{\"query\": \"denim jacket under $50\"}", "query": "denim jacket under $50", "status": 200, "outcome": "model_auth", "selected_id": "lst_007", "fit_card_chars": 0, "error": "The styling model couldn't be reached, so no outfit or fit card was written. The search still worked: the best match was Denim Jacket — Light Wash, Cropped — $42 on poshmark. Check that GEMINI_API_KEY in .env is correct, then run the same query again.", "duration_ms": 805, "model_attempts": 1, "retries": 0, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 0, "prompt_tokens": 0, "output_tokens": 0, "fault": "401"}
+{"ts": "2026-11-17T07:13:00.931+00:00", "request_id": "4792e106", "body": "{\"query\": \"denim jacket under $50\"}", "query": "denim jacket under $50", "status": 200, "outcome": "ok", "selected_id": "lst_007", "fit_card_chars": 216, "error": null, "duration_ms": 4466, "model_attempts": 4, "retries": 2, "cache_hits": 0, "paced_ms": 0, "backoff_ms": 2000, "prompt_tokens": 493, "output_tokens": 122, "fault": "503x1"}
+```
+
+Rows 14 and 15 are the failed runs. The outage spent 3 attempts and 3000 ms
+of backoff, then stopped with `model_overloaded` and kept the search result.
+The rejected key made 1 attempt, slept 0 ms, and stopped in 805 ms.
+
+**What It Costs**
+
+**Measured: 496.7 prompt + 130.1 output tokens, 2 model calls and 3.9 s per
+run (median 1.8 s). At paid rates that's about $0.00047 per run.**
+
+How I measured it: ten different matching queries sent to the running
+server with the cache off (`AI201_CACHE=0`) and 8 s between requests, so the
+limiter never paused one (`paced_ms` is 0 in all ten). The token counts are
+the ones the Gemini API reports on each response (`usage_metadata`), summed
+per request by `serve.py` from `generate.stats()`. These are rows 1–10 above:
+4,967 prompt and 1,301 output tokens in total, 20 model calls, and 38.9 s of
+wall time. Every run made exactly 2 calls; tokens per run ranged from 483 to
+521 in and from 112 to 147 out. Time is less steady. Eight runs took 1.6–5.4 s,
+and two (`black boots`, `leather jacket under $45`) took 9.4–9.6 s with no
+retries and no pacing, so that was time spent waiting on the model itself.
+
+Turning tokens into dollars uses the published paid-tier rate for
+`gemini-3.5-flash-lite`: $0.30 per million input tokens and $2.50 per
+million output tokens. That rate is the one estimate in this section.
+
+```
+input   496.7 tokens × $0.30 / 1,000,000 = $0.000149
+output  130.1 tokens × $2.50 / 1,000,000 = $0.000325
+                                   per run ≈ $0.000474
+```
+
+What I actually pay is $0. This key is on the free tier, so the real
+constraint is the rate limit, not money: 15 calls a minute at 2 calls per
+run is 7 runs a minute.
+
+**A hundred people a day**, one query each: 100 × $0.000474 = **$0.047 a day**,
+about $1.42 over 30 days. That's 200 model calls a day. Money isn't the
+limit; the 15-a-minute rate is. If 100 people asked within the same minute,
+`serve.py` handles one at a time and the limiter allows 7 runs a minute, so
+the last person would wait about 14 minutes. A failed run costs less, not
+more: the outage in row 14 made 3 attempts and used 0 tokens.
