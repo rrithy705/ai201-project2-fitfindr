@@ -44,6 +44,8 @@ _output_tokens = 0
 _client = None
 _budget_warned = False
 _retries = 0          # CAPSTONE: transient + rate-limit retries this session
+_paced_s = 0.0        # CAPSTONE: seconds spent waiting on the per-minute limiter
+_backoff_s = 0.0      # CAPSTONE: seconds spent sleeping between retries
 
 
 class QuotaGuard(Exception):
@@ -115,6 +117,7 @@ def clear_cache() -> int:
 
 def _wait_for_slot() -> None:
     """Sleep, if we've used up this minute's allowance."""
+    global _paced_s
     now = time.monotonic()
     _call_times[:] = [t for t in _call_times if now - t < 60.0]
 
@@ -133,6 +136,7 @@ def _wait_for_slot() -> None:
                 flush=True,
             )
         time.sleep(sleep_for)
+        _paced_s += sleep_for
         _call_times[:] = [t for t in _call_times if time.monotonic() - t < 60.0]
 
 
@@ -178,6 +182,9 @@ def stats() -> dict:
     return {
         "model_attempts": _session_calls,
         "retries": _retries,
+        "cache_hits": _cache_hits,
+        "paced_ms": round(_paced_s * 1000),
+        "backoff_ms": round(_backoff_s * 1000),
         "prompt_tokens": _prompt_tokens,
         "output_tokens": _output_tokens,
     }
@@ -402,7 +409,7 @@ def generate(
     Every call in this course goes through here. If you need to change how the
     model is called, change it in this one place.
     """
-    global _session_calls, _cache_hits, _retries
+    global _session_calls, _cache_hits, _retries, _backoff_s
 
     use_cache = cache and config.CACHE_ENABLED
     temperature = config.TEMPERATURE if temperature is None else temperature
@@ -470,6 +477,7 @@ def generate(
                     flush=True,
                 )
                 time.sleep(backoff)
+                _backoff_s += backoff
                 continue
 
             if kind != "rate_limit":
@@ -488,6 +496,7 @@ def generate(
                 flush=True,
             )
             time.sleep(backoff)
+            _backoff_s += backoff
 
     raise RuntimeError(
         f"Still rate limited after {config.MAX_RETRIES} attempts. Wait a "

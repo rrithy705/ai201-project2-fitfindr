@@ -72,6 +72,9 @@ app = Flask(__name__)
 #   duration_ms     arrival to response, including any wait for the lock
 #   model_attempts  model calls attempted, failed ones included
 #   retries         how many of those were retries (transient or rate limit)
+#   cache_hits      model answers reused from .cache/ instead of called
+#   paced_ms        time spent waiting on the 15-a-minute limiter
+#   backoff_ms      time spent sleeping between retries
 #   prompt_tokens / output_tokens   as reported by the service — the cost
 #   fault           AI201_FAULT, if a failure was being injected
 
@@ -160,6 +163,9 @@ def ask():
         "duration_ms": None,
         "model_attempts": 0,
         "retries": 0,
+        "cache_hits": 0,
+        "paced_ms": 0,
+        "backoff_ms": 0,
         "prompt_tokens": 0,
         "output_tokens": 0,
         "fault": os.getenv("AI201_FAULT") or None,
@@ -217,7 +223,7 @@ def _ask(record: dict):
         except Exception as exc:  # noqa: BLE001 — a 500 with a sentence beats a hang
             failure = f"{type(exc).__name__}: {exc}"
         after = generate.stats()
-    for k in ("model_attempts", "retries", "prompt_tokens", "output_tokens"):
+    for k in after:
         record[k] = after[k] - before[k]
 
     # Outside the lock: building a response is not work the next caller should

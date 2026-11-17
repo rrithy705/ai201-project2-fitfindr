@@ -14,15 +14,23 @@ Path B so I didn't have to sign up for a host with a card.
 setup below):
 
 ```bash
-.venv/bin/python serve.py
+PORT=5050 .venv/bin/python serve.py
 ```
 
-It listens on `http://localhost:5000` (set `PORT` to change it), answers one
-request at a time, and appends one JSON line per request to
-`logs/requests.jsonl`. Ask it something from a second terminal:
+It listens on `http://localhost:5050`, answers one request at a time, and
+appends one JSON line per request to `logs/requests.jsonl`.
+
+**Why `PORT=5050`:** `serve.py` defaults to 5000, and on macOS 12+ the AirPlay
+Receiver already listens on 5000. The server then fails with
+`Address already in use`, and `curl` gets a `403` back from AirPlay
+(`Server: AirTunes`) that looks like it came from FitFindr. The first
+instrumentation session I ran hit exactly that: 14 requests, 14 × 403, and
+no log lines at all.
+
+Ask it something from a second terminal:
 
 ```bash
-curl -s -X POST http://localhost:5000/ask \
+curl -s -X POST http://localhost:5050/ask \
   -H 'Content-Type: application/json' \
   -d '{"query": "vintage graphic tee under $30"}'
 tail -n 1 logs/requests.jsonl
@@ -36,7 +44,7 @@ git clone <this repo's URL> fitfindr && cd fitfindr
 python3.12 -m venv .venv
 .venv/bin/pip install -r requirements-lock.txt
 cp .env.example .env        # then put your GEMINI_API_KEY in .env
-.venv/bin/python serve.py
+PORT=5050 .venv/bin/python serve.py
 ```
 
 **What broke the first time I followed this from a clean clone:**
@@ -49,7 +57,7 @@ make the venv with uv instead. These lines worked from the same clean clone:
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -r requirements-lock.txt
 cp .env.example .env        # then put your GEMINI_API_KEY in .env
-.venv/bin/python serve.py
+PORT=5050 .venv/bin/python serve.py
 ```
 
 **What the environment needs**
@@ -76,7 +84,7 @@ starts):
 For example, to watch the server ride out a 503 on every first attempt:
 
 ```bash
-AI201_FAULT=503x1 .venv/bin/python serve.py
+AI201_FAULT=503x1 PORT=5050 .venv/bin/python serve.py
 ```
 
 **The test harness** for the capstone criteria starts and stops the server
