@@ -47,6 +47,7 @@ def new_session(query: str, wardrobe: dict) -> dict:
         "outfit_suggestion": None,   # what suggest_outfit returned
         "fit_card": None,            # what create_fit_card returned
         "error": None,               # set when the run ended early
+        "error_kind": None,          # CAPSTONE: why it ended early, as a label
     }
 
 
@@ -216,6 +217,7 @@ def run_agent(query: str, wardrobe: dict) -> dict:
                 trace.step("parse_query", inputs=session["query"],
                            returned=str(session["parsed"]))
                 if not session["parsed"]["description"]:
+                    session["error_kind"] = "no_item_words"
                     session["error"] = (
                         "Your query only had a size or a price in it. Say what "
                         "kind of item you want, e.g. 'graphic tee under $30'."
@@ -233,6 +235,7 @@ def run_agent(query: str, wardrobe: dict) -> dict:
                 # THE BRANCH: nothing found → explain and stop, never call
                 # suggest_outfit with nothing.
                 if not session["search_results"]:
+                    session["error_kind"] = "empty_search"
                     session["error"] = _empty_search_message(parsed)
                     trace.step("branch", note="search returned []: stopping "
                                "before suggest_outfit")
@@ -260,18 +263,33 @@ def run_agent(query: str, wardrobe: dict) -> dict:
 
     except ModelUnavailable as exc:
         found = session["selected_item"]
+        # CAPSTONE: the advice depends on what actually failed. Before, every
+        # failure said "check GEMINI_API_KEY", including 503s where the key was
+        # fine — so a user would go and break a working key.
+        kind = getattr(exc, "kind", "other")
+        advice = {
+            "auth": "Check that GEMINI_API_KEY in .env is correct, then run the "
+                    "same query again.",
+            "not_found": "Check AI201_MODEL in .env — the model name didn't "
+                         "resolve.",
+            "overloaded": "The model service is busy right now and your key is "
+                          "fine. Wait a minute, then run the same query again.",
+            "timeout": "The model didn't answer in time. Check that you're "
+                       "online, then run the same query again.",
+        }.get(kind, "Run the same query again in a minute.")
+        session["error_kind"] = f"model_{kind}"
         session["error"] = (
             "The styling model couldn't be reached, so no outfit or fit card was "
             "written. "
             + (f"The search still worked: the best match was {found['title']} — "
                f"${found['price']:.0f} on {found['platform']}. " if found else "")
-            + "Check that GEMINI_API_KEY in .env is correct and that you're "
-            "online, then run the same query again."
-            f"\n(What the service said: {str(exc).splitlines()[0]})"
+            + advice
+            + f"\n(What the service said: {str(exc).splitlines()[0]})"
         )
-        trace.step("model unavailable", note="stopping; search result kept")
+        trace.step("model unavailable", note=f"{kind}; stopping; search result kept")
 
     except MCPError as exc:
+        session["error_kind"] = "search_unavailable"
         session["error"] = (
             "The listings search couldn't be reached, so nothing was searched. "
             "Check that `python mcp_server.py` starts without an error, then "
