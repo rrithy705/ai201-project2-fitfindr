@@ -99,3 +99,89 @@ I chose 5 out of 5 because search_listings uses a price filter to remove items t
      A number you missed stays where it is, gets diagnosed, and gets a fix
      attempted. That's where the points are.
      ───────────────────────────────────────────────────────────────────────── -->
+
+---
+
+# Capstone criteria — shape B, hardening the model call
+
+Written before any capstone test ran. Every criterion is tested through the
+running server (`POST /ask` on `serve.py`) with the response cache off
+(`AI201_CACHE=0`), because the first logged session showed the cache
+answering a request that had a 503 injected. A **trial** is one fresh start of
+the server per scenario and the full set of requests below. Each criterion
+gets three trials.
+
+The five matching queries used wherever a criterion says "the five matching
+queries": `vintage graphic tee under $30`, `90s track jacket in size M`,
+`platform sneakers size 8`, `vintage jeans under $35`,
+`denim jacket under $50`.
+
+Criteria C1–C4 are about the extension. C5 is about input handling that
+`serve.py` already had.
+
+## C1. A single 503 is retried and the user never sees it
+
+With `AI201_FAULT=503x1` (the first attempt of every model call fails with a
+503), each of the five matching queries returns HTTP 200 with
+`session["error"]` null and a non-empty `fit_card`, and its log line shows
+`retries` = 2 (one per model call) — **5 of 5 in each trial.**
+
+**Why this target:** the unit 4 after run lost 8 of 35 tries to exactly
+this, a 503 that would have cleared on a second attempt. The retry is
+deterministic code: one failure, then a pause, then a real call. Anything
+less than 5/5 means the retry is broken, not unlucky. Requiring `retries` = 2
+in the log as well checks that it recovered *by retrying*, rather than the
+fault never firing (which is what the cache did in session 1).
+
+## C2. An outage stops quickly, keeps the search, and doesn't blame the key
+
+With `AI201_FAULT=503` (every attempt fails), each of the five matching
+queries: returns within **10,000 ms** (`duration_ms` in its log line); keeps the
+search result (`selected_item` not null); has an error message that contains
+"wait" and does **not** contain "GEMINI_API_KEY"; and is logged with outcome
+`model_overloaded` — **5 of 5 in each trial.**
+
+**Why this target:** three attempts with a 1 s then 2 s pause is 3 s of
+waiting, plus about 1 s for the MCP search. So 10 s leaves room for a slow
+machine but would still catch a retry loop that ran too long or never ended.
+The message check is the unit 4 bug itself: a user told to check a working key
+goes and breaks it. 5/5 because none of this depends on the model. The fault
+is injected before the network.
+
+## C3. A rejected key is not retried
+
+With `AI201_FAULT=401`, each of the five matching queries returns within
+**2,000 ms**, its log line shows `model_attempts` = 1 and `retries` = 0, and the
+error message contains "GEMINI_API_KEY" — **5 of 5 in each trial.**
+
+**Why this target:** this is the risk the new layer adds. If a permanent error
+were mistaken for a transient one, a bad key would cost three attempts and
+3 s of backoff before saying anything, and it could never succeed. 2,000 ms
+is the search (~1 s) plus one failed call, with no room for even one 1 s
+backoff. `model_attempts` = 1 checks the same thing directly.
+
+## C4. Every request leaves exactly one log line, failures included
+
+Across every request a trial sends (all of C1, C2, C3 and C5, 21 requests),
+the log gains exactly one line per request. Each line parses as JSON, has
+non-null `ts`, `status`, `outcome` and `duration_ms`, and its `status` equals
+the HTTP status the client actually received — **21 of 21 in each trial.**
+
+**Why this target:** a log that misses the failures is worse than none,
+because it says the bad path never happened. The rows most likely to go
+missing are the ones that fail early (rejected input) or crash, which is
+exactly why they're included. One missing line means a class of request
+can't be seen, so the target is all of them.
+
+## C5. Malformed input gets a 400, never a 500
+
+Six malformed requests: no body; a body that isn't JSON; `{"query": ""}`;
+`{"query": "   "}`; `{"query": 42}`; and a JSON array `["vintage tee"]`. Each
+returns HTTP **400** with a JSON body that has an `error` field — **6 of 6 in
+each trial.**
+
+**Why this target:** each of these is the caller's mistake, and a 400 tells
+them so and what to send. A 500 tells them the server broke, and a script
+calling FitFindr would retry it forever. None of this touches the model, so
+it should hold every time; 5 of 6 would mean one shape of bad input crashes
+the server.
